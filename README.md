@@ -1,0 +1,80 @@
+# whatsapp-code
+
+An experimental adapter that uses WhatsApp's consumer Meta AI as the model behind Claude Code.
+
+Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
+
+**Status:** local protocol tests pass, including an actual Claude Code file-read/tool-result round trip against a fake model. A live WhatsApp → Meta AI → Claude Code round trip has not yet been verified.
+
+The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
+
+## Setup
+
+Requires Node 22+, Go 1.26+, a C compiler (for SQLite), Claude Code on PATH, and WhatsApp with Meta AI available. Tested locally with Claude Code 2.1.317 on macOS arm64.
+
+    git clone https://github.com/hetankevin/whatsapp-code.git
+    cd whatsapp-code
+    npm ci
+    npm run build
+    npm start
+
+Open .state/pairing.html in a browser. On your phone, open **WhatsApp → Settings → Linked devices → Link a device**, then scan the QR. The page refreshes as QR codes rotate. If pairing expires, restart the gateway and reload the page. Wait for the terminal to report WhatsApp ready.
+
+Keep the gateway running. From the project you want to work on:
+
+    node /path/to/whatsapp-code/src/launch.mjs
+
+For a first check:
+
+    node /path/to/whatsapp-code/src/launch.mjs -p 'Reply with hello.'
+
+The launcher uses a compact coding prompt and Read, Write, Edit, Glob, Grep, and Bash. Claude Code's bare mode avoids automatically importing ordinary hooks, MCP servers, and project instructions into WhatsApp. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
+
+## Data and access
+
+**Prompts, code, and tool results are sent to Meta AI through your WhatsApp account**, and may appear in the Meta AI chat on other devices. Consumer Meta AI's policies apply. Do not assume ordinary person-to-person WhatsApp privacy protections apply to data sent to Meta AI.
+
+WhatsApp grants a paired device account-level access. This implementation disables history downloads and ignores messages except replies from the selected Meta AI bot. That filter does not narrow the underlying credential's permissions.
+
+The device database, gateway token, and pairing page stay in .state/, with restrictive filesystem permissions and Git exclusions. Never share that directory. Revoke the linked device from your phone when finished. The gateway listens on 127.0.0.1, requires its local token, and rejects browser-origin API requests. Do not expose it publicly.
+
+## Limits
+
+- One active request at a time; no parallel sessions or agents.
+- Full supplied context is resent, up to a 60,000-character limit. Oversized requests fail rather than silently truncating code.
+- Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
+- Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.
+- Tool calling uses prompted JSON. Unknown tools, invalid arguments, and mismatched request IDs are rejected.
+- Replies are buffered, then emitted as Anthropic SSE events. This is not native token streaming.
+- Token counts are character-based estimates, not tokenizer or billing data.
+- No model-version pinning, sampling controls, or enforceable output-token limit.
+- No automatic prompt retries. A failed/cancelled request may already have reached WhatsApp; manual retries may duplicate it.
+- Known rich text/code fields are decoded. New binary formats or WhatsApp protocol changes may require updates.
+- Discovery chooses a known Meta AI bot returned by the account, preferring Muse. Different bot addresses/surfaces need not use the same model.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| WA_PORT | 8787 | Loopback port; set on server and launcher |
+| WA_STATE_DIR | repository .state/ | Private runtime directory; set on server and launcher |
+| WA_BOT_JID | discovered | Explicit known Meta AI address; set on server |
+| GO_BINARY | go | Compiler for npm run build |
+
+Supported explicit bot addresses are defined by whatsmeow: 1807055946647697@bot (Muse), 867051314767696@bot (Meta AI), and 13135550002@s.whatsapp.net (legacy). An override does not establish account eligibility.
+
+## Tests
+
+    npm test
+    npm run test:claude
+
+The second command runs actual Claude Code in a temporary directory against a local fake model, verifies a file read, and makes no WhatsApp/model-provider calls. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
+
+Dependencies are pinned in package-lock.json and transport/go.sum. Original code is MIT licensed; dependencies retain their licenses.
+
+## References
+
+- [Claude Code gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)
+- [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect)
+- [whatsmeow API](https://pkg.go.dev/go.mau.fi/whatsmeow)
+- [Meta AI on WhatsApp](https://ai.meta.com/learn/ai-basics/how-to-use-meta-ai-on-whatsapp/)

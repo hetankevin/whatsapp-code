@@ -1,0 +1,24 @@
+{
+  "name": "whatsapp-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental WhatsApp Meta AI gateway for Claude Code",
+  "license": "MIT",
+  "repository": {"type":"git","url":"https://github.com/hetankevin/whatsapp-code.git"},
+  "bin": {"whatsapp-code":"src/launch.mjs"},
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node src/server.mjs",
+    "test": "node --test",
+    "test:claude": "node scripts/smoke-claude.mjs",
+    "claude": "node src/launch.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ajv": "8.17.1",
+    "qrcode": "1.5.4"
+  }
+}

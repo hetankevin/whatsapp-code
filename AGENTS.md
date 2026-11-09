@@ -1,0 +1,1 @@
+Read HANDOFF.md before changing this adapter. Keep it current. Never commit linked-device credentials, pairing QR codes, gateway tokens, or chat transcripts. Commit messages should be short and lowercase, with no AI coauthor credits.

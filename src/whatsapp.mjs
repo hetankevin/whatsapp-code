@@ -1,0 +1,106 @@
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { randomBytes } from 'node:crypto';
+import { writeFile, rm } from 'node:fs/promises';
+import path from 'node:path';
+import QRCode from 'qrcode';
+import { extractText, GatewayError, parseReply } from './protocol.mjs';
+
+export class WhatsApp {
+  constructor({root, stateDir, timeout = 120000}) {
+    this.ready = false;
+    this.stateDir = stateDir;
+    this.timeout = timeout;
+    this.status = 'connecting';
+    this.child = spawn(path.join(root, 'bin/whatsapp-transport'), [], {
+      env: {...process.env, WA_STATE_DIR: stateDir}, stdio: ['pipe', 'pipe', 'inherit']
+    });
+    this.child.on('error', e => this.fail(`Transport could not start: ${e.message}. Run npm run build.`));
+    this.child.on('exit', () => this.fail('WhatsApp transport exited. Restart the gateway.'));
+    this.child.stdin.on('error', () => this.fail('WhatsApp transport input closed.'));
+    const lines = createInterface({input: this.child.stdout});
+    // Serialize events so an old QR render cannot overwrite a later successful pairing state.
+    let chain = Promise.resolve();
+    lines.on('line', line => { chain = chain.then(() => this.event(JSON.parse(line))).catch(e => this.fail(e.message)); });
+  }
+  fail(message) {
+    this.ready = false; this.status = message;
+    console.error(message);
+    this.pending?.reject(new GatewayError(message, 503));
+  }
+  async pairingPage(html) {
+    await writeFile(path.join(this.stateDir, 'pairing.html'), `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="3"><title>whatsapp-code pairing</title><style>body{font:18px system-ui;max-width:640px;margin:40px auto}img{width:360px;height:360px}</style>${html}`, {mode: 0o600});
+  }
+  async event(e) {
+    if (e.event === 'pairing') {
+      if (e.status === 'code') {
+        this.status = 'scan QR in .state/pairing.html';
+        const image = await QRCode.toDataURL(e.code, {width: 360, margin: 3});
+        await this.pairingPage(`<h1>Link WhatsApp</h1><p>On your phone: WhatsApp → Settings → Linked devices → Link a device.</p><img src="${image}" alt="WhatsApp pairing QR"><p>This links the local whatsapp-code client to your account. The app processes only Meta AI replies, though a linked device has account-level access. Keep this page private.</p>`);
+        console.error(`Pairing QR ready: ${path.join(this.stateDir,'pairing.html')}`);
+      } else {
+        this.status = 'pairing ' + e.status + (e.error ? ': ' + e.error : '');
+        console.error(this.status);
+        await this.pairingPage(`<h1>Pairing ${e.status === 'success' ? 'complete' : 'ended'}</h1><p>Check the gateway terminal for connection status. Restart npm start if pairing expired.</p>`);
+      }
+      return;
+    }
+    if (e.event === 'ready') {
+      this.ready = true; this.status = 'ready'; this.bot = e.bot;
+      await this.pairingPage('<h1>WhatsApp connected</h1><p>You can close this page and start whatsapp-code.</p>');
+      console.error(`WhatsApp ready (${e.bot}).`);
+      return;
+    }
+    if (['fatal','disconnected','logged_out'].includes(e.event)) return this.fail(e.error ?? e.event);
+    if (e.event === 'error') {
+      if (this.pending && e.id === this.pending.id) this.pending.reject(new GatewayError(e.error, 502));
+      else this.fail(e.error);
+      return;
+    }
+    if (e.event !== 'message' || !this.pending) return;
+    const p = this.pending;
+    // Match the original sent message; never route another chat/turn into this request.
+    if (e.target !== p.id && !p.messageIds.has(e.edit_target)) return;
+    p.messageIds.add(e.id);
+    const text = extractText(e.message);
+    if (!text) return;
+    p.lastError = null;
+    let reply;
+    try { reply = parseReply(text, p.request); }
+    catch (err) { p.lastError = err; }
+    // Some bot protocols send edited full snapshots; wait for final/full, or a quiet
+    // complete JSON snapshot. Incomplete chunks never become executable tool calls.
+    clearTimeout(p.settle);
+    if (reply) {
+      if (['last', 'full'].includes(e.edit)) p.resolve(reply);
+      else p.settle = setTimeout(() => p.resolve(reply), 2500);
+    } else if (['last', 'full'].includes(e.edit)) {
+      p.reject(p.lastError);
+    }
+  }
+  async complete(request, signal) {
+    if (!this.ready) throw new GatewayError(`WhatsApp unavailable: ${this.status}`, 503);
+    if (this.pending) throw new GatewayError('One WhatsApp request is already running. Parallel sessions are unsupported.', 409);
+    if (signal?.aborted) throw new GatewayError('Request cancelled.', 499);
+    let p;
+    try {
+      return await new Promise((resolve, reject) => {
+        p = {id: `3EB0${randomBytes(10).toString('hex').toUpperCase()}`, request, resolve, reject, messageIds: new Set()};
+        this.pending = p;
+        p.timer = setTimeout(() => reject(p.lastError ?? new GatewayError('Meta AI response timed out. The WhatsApp prompt may have been sent; it was not retried.', 504)), this.timeout);
+        p.abort = () => reject(new GatewayError('Request cancelled; an already sent WhatsApp prompt cannot be recalled.', 499));
+        signal?.addEventListener('abort', p.abort, {once: true});
+        this.child.stdin.write(JSON.stringify({id:p.id,prompt:request.prompt})+'\n', err => {if(err) reject(err);});
+      });
+    } finally {
+      clearTimeout(p?.timer); clearTimeout(p?.settle);
+      signal?.removeEventListener('abort', p?.abort);
+      this.pending = null;
+    }
+  }
+  async close() {
+    this.pending?.reject(new GatewayError('Gateway stopping.',503));
+    this.child.stdin.end(); this.child.kill('SIGTERM');
+    await rm(path.join(this.stateDir,'pairing.html'), {force:true});
+  }
+}
