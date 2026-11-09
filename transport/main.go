@@ -83,6 +83,11 @@ func main() {
 					}
 					chosen = j
 				}
+				// Discovery still returns the retired phone-number address on some
+				// accounts. Use Meta AI's current bot address unless explicitly overridden.
+				if chosen == types.MetaAIJID && os.Getenv("WA_BOT_JID") == "" {
+					chosen = types.NewMetaAIJID
+				}
 				if chosen.IsEmpty() {
 					emit(map[string]any{"event": "error", "error": "No supported Meta AI bot discovered. Set WA_BOT_JID explicitly after checking the account.", "bots": choices})
 					return

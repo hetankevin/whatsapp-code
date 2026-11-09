@@ -49,6 +49,12 @@ test('WhatsApp matching rejects late replies and uses final JSON only',async()=>
  await w.event({event:'message',id:'last',edit_target:'first',edit:'last',message:{conversation:text}});
  assert.equal(resolved.content[0].text,'correct');
 });
+test('valid intermediate bot edits never execute before a final edit',async()=>{
+ const w=Object.create(WhatsApp.prototype);const r=prepare(body());let resolved=false;
+ w.pending={id:'outbound',request:r,messageIds:new Set(),resolve:()=>{resolved=true},reject:e=>{throw e}};
+ await w.event({event:'message',id:'intermediate',target:'outbound',edit:'inner',message:{conversation:reply(r,[{type:'tool_use',name:'Read',input:{file_path:'x'}}])}});
+ assert.equal(w.pending.settle,undefined);assert.equal(resolved,false);
+});
 async function withServer(fn,complete=async r=>parseReply(reply(r,[{type:'text',text:'ok'}]),r)){
  const server=createGateway({backend:{ready:true,status:'ready',complete},token:'test-key'});
  server.listen(0,'127.0.0.1');await once(server,'listening');

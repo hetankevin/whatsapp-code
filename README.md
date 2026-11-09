@@ -4,7 +4,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** local protocol tests pass, including an actual Claude Code file-read/tool-result round trip against a fake model. A live WhatsApp → Meta AI → Claude Code round trip has not yet been verified.
+**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Nine local protocol tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
@@ -50,7 +50,7 @@ The device database, gateway token, and pairing page stay in .state/, with restr
 - No model-version pinning, sampling controls, or enforceable output-token limit.
 - No automatic prompt retries. A failed/cancelled request may already have reached WhatsApp; manual retries may duplicate it.
 - Known rich text/code fields are decoded. New binary formats or WhatsApp protocol changes may require updates.
-- Discovery chooses a known Meta AI bot returned by the account, preferring Muse. Different bot addresses/surfaces need not use the same model.
+- Discovery chooses a known Meta AI bot returned by the account, preferring Muse. Retired phone-number discovery results map to the current Meta AI bot address. Different bot addresses/surfaces need not use the same model.
 
 ## Configuration
 
@@ -62,6 +62,8 @@ The device database, gateway token, and pairing page stay in .state/, with restr
 | GO_BINARY | go | Compiler for npm run build |
 
 Supported explicit bot addresses are defined by whatsmeow: 1807055946647697@bot (Muse), 867051314767696@bot (Meta AI), and 13135550002@s.whatsapp.net (legacy). An override does not establish account eligibility.
+
+The live test used 867051314767696@bot. The legacy phone address failed, and Muse required encryption state that was not present on the newly linked device. If you see “no active WASA root secret,” this is missing Muse session state, not a Claude Code error. Do not assume that pairing alone makes Muse available.
 
 ## Tests
 

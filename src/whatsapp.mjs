@@ -71,6 +71,7 @@ export class WhatsApp {
     // Some bot protocols send edited full snapshots; wait for final/full, or a quiet
     // complete JSON snapshot. Incomplete chunks never become executable tool calls.
     clearTimeout(p.settle);
+    if (['first', 'inner'].includes(e.edit)) return;
     if (reply) {
       if (['last', 'full'].includes(e.edit)) p.resolve(reply);
       else p.settle = setTimeout(() => p.resolve(reply), 2500);
