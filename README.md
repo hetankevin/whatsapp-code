@@ -4,7 +4,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Twenty-two local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
+**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Twenty-three local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
@@ -96,3 +96,5 @@ This sends prompts and disposable example code through your paired WhatsApp acco
 The first three-prompt comparison completed one of six runs. Compact passed the cache task, and all three prompts failed CSV. Follow-up runs on the two tasks also failed. The observed problems include malformed tool replies, edits that differ from the file's exact whitespace, and ending a turn after a failed test. The compact prompt remains the default. These runs are too small to rank the prompts reliably.
 
 With EditLines, the compact prompt applied two cache changes successfully. The deadline boundary test still failed when a later model reply could not be decoded. The CSV run read the file and ran the tests but made no edit before hitting the same reply error. Both runs failed the end-to-end criteria. The line-range translation itself passed the local Claude Code integration test.
+
+The short EDIT header and test recovery guard produced one pair that passed the original fixture checks. A separate review found that its CSV patch missed a standalone quoted empty field. In the final rerun, cache passed in 35.1 seconds with one translated edit and a successful test run. CSV failed in 34.6 seconds when a reply could not be decoded, before any edit applied. Explicit indentation remains available in the repair format. The fixture runs still show variable live reliability.
