@@ -203,6 +203,26 @@ function parseCodeFrame(text) {
   return reply;
 }
 
+// A complete EDIT frame may arrive as literal text inside a broken JSON
+// new_string. Parse the metadata separately and leave the source bytes alone.
+function parseWrappedLineFrame(text) {
+  const header = /^([^\r\n]*?"new_string"[ \t]*:[ \t]*")(?=EDIT[ \t]+[0-9a-f]{24}[ \t])/.exec(text);
+  const footer = /(\r?\nEND[ \t]+[0-9a-f]{24})"[ \t]*\}[ \t]*\}?[ \t]*\][ \t]*\}$/.exec(text);
+  if (!header || !footer || footer.index < header[0].length) {
+    throw new SyntaxError('Missing literal EDIT wrapper.');
+  }
+
+  const reply = JSON.parse(header[1] + '"}}]}');
+  const [call] = reply.content ?? [];
+  if (reply.content?.length !== 1 || call?.type !== 'tool_use' || call.name !== 'EditLines') {
+    throw new SyntaxError('A literal EDIT wrapper requires one EditLines call.');
+  }
+
+  // resolveLineEdit validates the nested request ID, snapshot, and bounds.
+  call.input.new_string = text.slice(header[0].length, footer.index + footer[1].length);
+  return reply;
+}
+
 export function prepare(body, maxChars = 60000) {
   if (!Array.isArray(body.messages) || !body.messages.length) throw new GatewayError('messages must be a nonempty array.');
   if (body.thinking && body.thinking.type !== 'disabled') throw new GatewayError('Extended thinking is unavailable. Set MAX_THINKING_TOKENS=0.');
@@ -269,7 +289,13 @@ export function parseReply(raw, request) {
   let obj;
   try {
     try { obj = JSON.parse(trimmed); }
-    catch { obj = trimmed.startsWith('EDIT ') || trimmed.startsWith('EDIT\t') ? parseLineFrame(trimmed) : parseCodeFrame(trimmed); }
+    catch {
+      if (/^EDIT[ \t]/.test(trimmed)) obj = parseLineFrame(trimmed);
+      else {
+        try { obj = parseCodeFrame(trimmed); }
+        catch { obj = parseWrappedLineFrame(trimmed); }
+      }
+    }
   } catch {
     const error = new GatewayError('Meta AI did not return complete protocol JSON or a code frame.', 502);
     error.repairable = true;

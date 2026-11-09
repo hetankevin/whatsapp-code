@@ -201,3 +201,21 @@ test('nested EDIT headers never become source and are unwrapped only for matchin
   const literal = '2|3';
   assert.equal(parseReply(reply(literal),request).content[0].input.new_string, 'const a = 1;\n2|3\n}');
 });
+
+test('recover a complete EDIT frame inside malformed JSON without changing literal code', () => {
+  const request = lineEditRequest();
+  const nonce = request.requestId;
+  const source = "return c === '\"' ? '\\\\n' : c;";
+  const frame = 'EDIT '+nonce+' read-x 8 8 INDENT\n2|'+source+'\nEND '+nonce;
+  const header = '{"request_id":"'+nonce+'","content":[{"type":"tool_use","name":"EditLines","input":'
+    +'{"read_id":"read-x","start_line":8,"end_line":8,"new_string":"';
+  const wrap = (body, tail = '"}}]}') => header + body + tail;
+  for (const reply of [wrap(frame), wrap(frame, '"}]}')]) {
+    assert.throws(() => JSON.parse(reply), SyntaxError);
+    assert.equal(parseReply(reply,request).content[0].input.new_string,'const a = 1;\n  '+source+'\n}');
+  }
+  assert.throws(() => parseReply(wrap(frame.replace('read-x 8 8','read-x 8 9')),request), /disagrees/);
+  assert.throws(() => parseReply(wrap(frame.replaceAll(nonce,'1'.repeat(24))),request), /stale request ID/);
+  assert.throws(() => parseReply(wrap(frame.split('\nEND ')[0]),request), /complete protocol/);
+  assert.throws(() => parseReply(wrap(frame).replace('"EditLines"','"Edit"'),request), /complete protocol/);
+});
