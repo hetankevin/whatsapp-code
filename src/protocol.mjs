@@ -43,7 +43,9 @@ export function prepare(body, maxChars = 60000) {
       return {role: m.role, content: content(m.content)};
     })
   };
-  const prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn ONLY one JSON object, with no Markdown or explanation outside it:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
+  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn ONLY one JSON object, with no Markdown or explanation outside it:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
+  const systemText = typeof payload.system === 'string' ? payload.system : payload.system.map(b => b.text ?? '').join('\n');
+  prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   return {prompt, requestId, validators, choice: payload.tool_choice, model: body.model ?? 'meta-ai-whatsapp'};
 }
@@ -51,7 +53,7 @@ export function prepare(body, maxChars = 60000) {
 export function parseReply(raw, request) {
   const trimmed = raw.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '').trim();
   let obj;
-  try { obj = JSON.parse(trimmed); } catch { throw new GatewayError('Meta AI did not return complete protocol JSON.', 502); }
+  try { obj = JSON.parse(trimmed); } catch { const error = new GatewayError('Meta AI did not return complete protocol JSON.', 502); error.repairable = true; throw error; }
   if (obj.request_id !== request.requestId) throw new GatewayError('Meta AI reply does not match this request.', 502);
   if (!Array.isArray(obj.content) || !obj.content.length) throw new GatewayError('Meta AI returned no content.', 502);
   const blocks = obj.content.map(b => {

@@ -4,7 +4,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Nine local protocol tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
+**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Fifteen local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
@@ -28,7 +28,7 @@ For a first check:
 
     node /path/to/whatsapp-code/src/launch.mjs -p 'Reply with hello.'
 
-The launcher uses a compact coding prompt and Read, Write, Edit, Glob, Grep, and Bash. Claude Code's bare mode avoids automatically importing ordinary hooks, MCP servers, and project instructions into WhatsApp. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
+The launcher uses a compact coding prompt and Read, Write, Edit, Glob, Grep, and Bash. Claude Code's bare mode avoids importing ordinary hooks and MCP servers. The launcher supplies the actual working directory, a root file listing, and root AGENTS.md/CLAUDE.md contents to Meta AI; it does not read unrelated file contents. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
 
 ## Data and access
 
@@ -48,7 +48,7 @@ The device database, gateway token, and pairing page stay in local application s
 - Replies are buffered, then emitted as Anthropic SSE events. This is not native token streaming.
 - Token counts are character-based estimates, not tokenizer or billing data.
 - No model-version pinning, sampling controls, or enforceable output-token limit.
-- No automatic prompt retries. A failed/cancelled request may already have reached WhatsApp; manual retries may duplicate it.
+- Malformed JSON gets at most one formatting-repair request. No tool executes before the repaired reply passes validation. Wrong request IDs and invalid tools are rejected without repair. Failed/cancelled task requests are not automatically resent; manual retries may duplicate a WhatsApp message.
 - Known rich text/code fields are decoded. New binary formats or WhatsApp protocol changes may require updates.
 - Discovery chooses a known Meta AI bot returned by the account, preferring Muse. Retired phone-number discovery results map to the current Meta AI bot address. Different bot addresses/surfaces need not use the same model.
 
@@ -82,3 +82,13 @@ Dependencies are pinned in package-lock.json and transport/go.sum. Original code
 - [Meta AI on WhatsApp](https://ai.meta.com/learn/ai-basics/how-to-use-meta-ai-on-whatsapp/)
 
 Existing checkouts from the initial version used .state/. Stop the gateway and move that directory to the platform storage location above, or set WA_STATE_DIR to its absolute path on both server and launcher. Keep credentials outside synced project folders.
+
+## Coding-harness development
+
+Select a prompt with --harness-prompt compact, --harness-prompt coding, or --harness-prompt native. Compact is the initial bootstrap prompt; coding supplies fuller project-inspection, edit, test, and permission guidance; native uses Claude Code's own default prompt. All three receive project context and the WhatsApp JSON protocol. Native may exceed the gateway context limit.
+
+The live development exercises run with:
+
+    python3 scripts/eval_coding.py --prompts compact coding native
+
+This sends prompts and disposable example code through your paired WhatsApp account. It tests a TTL cache fix and CSV parsing against visible and held-out checks, preserves supplied tests, and checks whether the model actually invokes the prescribed test command. Results and traces stay under ignored .work/coding-evals. These are small development exercises, not a general coding benchmark.
