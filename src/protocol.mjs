@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
+import { failedTests, testCommand } from './failed-tests.mjs';
 
 export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -85,20 +86,20 @@ const lineEditTool = {
   }
 };
 
-function rangeError(message) {
+function repairableError(message) {
   const error = new GatewayError(message, 502);
   error.repairable = true;
   return error;
 }
 
 function resolveLineEdit(input, request) {
-  if (!request.validateLineEdit?.(input)) throw rangeError('EditLines needs a read_id, two line numbers, and replacement source.');
+  if (!request.validateLineEdit?.(input)) throw repairableError('EditLines needs a read_id, two line numbers, and replacement source.');
   const {read_id, start_line, end_line, new_string} = input;
   const snapshot = request.snapshots.get(read_id);
-  if (!snapshot) throw rangeError('EditLines needs a current Read snapshot. Use a read_id from editable_reads or call Read again.');
+  if (!snapshot) throw repairableError('EditLines needs a current Read snapshot. Use a read_id from editable_reads or call Read again.');
   const {first, lines, filePath} = snapshot;
   if (start_line < first || end_line < start_line || end_line >= first + lines.length) {
-    throw rangeError('EditLines range lies outside the numbered Read result.');
+    throw repairableError('EditLines range lies outside the numbered Read result.');
   }
   // Use the whole observed excerpt as the exact match. The real Edit tool
   // checks for file changes and ambiguity before modifying anything.
@@ -126,11 +127,39 @@ function content(blocks, readIds, snapshots) {
   });
 }
 
+function decodeIndentation(source) {
+  if (source === '') return '';
+  return source.split('\n').map(line => {
+    const match = /^(\d{1,3}|[st]{1,128})\|([\s\S]*)$/.exec(line);
+    if (!match) throw new SyntaxError('Indented source needs an indentation prefix on each line.');
+    const [, prefix, code] = match;
+    const indentation = /^\d/.test(prefix)
+      ? ' '.repeat(Number(prefix))
+      : prefix.replaceAll('s', ' ').replaceAll('t', '\t');
+    return indentation + code;
+  }).join('\n');
+}
+
+// A short header avoids putting code or delimiter punctuation inside JSON.
+function parseLineFrame(text) {
+  const match = /^EDIT[ \t]+(\S+)[ \t]+(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n([\s\S]*?)\r?\nEND[ \t]+(\S+)$/.exec(text);
+  if (!match || match[1] !== match[7]) throw new SyntaxError('Incomplete EDIT frame.');
+  const [, request_id, read_id, start, end, mode, body] = match;
+  const fence = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/.exec(body);
+  const source = fence ? fence[2] : body;
+  return {request_id, content:[{
+    type:'tool_use', name:'EditLines',
+    input:{read_id, start_line:Number(start), end_line:Number(end), new_string:mode === 'INDENT' ? decodeIndentation(source) : source}
+  }]};
+}
+
 // JSON carries metadata and the framed text carries literal source.
 function parseCodeFrame(text) {
-  const match = /^([^\n]+)\n<<<(FILE|OLD|NEW)>>>\n([\s\S]*)\n<<<END>>>$/.exec(text);
-  if (!match) throw new SyntaxError('Missing code frame markers.');
-  const [, header, kind, source] = match;
+  const ordinary = /^([^\n]+)\n<<<(FILE|OLD)>>>\n([\s\S]*)\n<<<END>>>$/.exec(text);
+  // WhatsApp delivered the previous range marker inline and one > short.
+  const range = /^([^\n]+?)[ \t]*(?:\r?\n[ \t]*)?<<<NEW>>[>]?[ \t]*\r?\n([\s\S]*?)\r?\n<<<END>>>$/.exec(text);
+  if (!ordinary && !range) throw new SyntaxError('Missing code frame markers.');
+  const [header, kind, source] = ordinary ? ordinary.slice(1) : [range[1], 'NEW', range[2]];
   const reply = JSON.parse(header);
   if (!Array.isArray(reply?.content) || reply.content.length !== 1) {
     throw new SyntaxError('A code frame requires exactly one tool call.');
@@ -178,6 +207,7 @@ export function prepare(body, maxChars = 60000) {
   const editableReads = [...snapshots].map(([read_id, {filePath, first, lines}]) =>
     ({read_id, file_path:filePath, start_line:first, end_line:first + lines.length - 1}));
   const modelTools = rangeEnabled ? tools.map(tool => tool.name === 'Edit' ? lineEditTool : tool) : tools;
+  const testFailures = choice.type === 'auto' ? failedTests(body.messages) : new Map();
   const readIds = new Set();
   const payload = {
     request_id: requestId,
@@ -185,6 +215,7 @@ export function prepare(body, maxChars = 60000) {
     tools: modelTools.map(({name, description, input_schema}) => ({name, description, input_schema})),
     tool_choice: choice,
     editable_reads: rangeEnabled ? editableReads : undefined,
+    failed_tests: testFailures.size ? [...testFailures].slice(-2).map(([command, failure]) => ({command, failure})) : undefined,
     messages: body.messages.map(m => {
       if (!['user', 'assistant'].includes(m.role)) throw new GatewayError('Invalid message role.');
       if (m.role === 'assistant' && Array.isArray(m.content)) {
@@ -196,23 +227,22 @@ export function prepare(body, maxChars = 60000) {
     })
   };
   let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
-  const firstRead = editableReads[0];
   const rangeGuide = rangeEnabled ? [
-    'Use EditLines for edits. Select a read_id from editable_reads and use its displayed 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible. Request one EditLines call at a time.',
-    'For each EditLines call send exactly the following format. Put the replacement code literally between the marker lines, with its indentation and quotes. Supply only the replacement lines for your selected range. An empty replacement deletes those lines. Use no Markdown fences.',
-    JSON.stringify({request_id:requestId, content:[{type:'tool_use', name:'EditLines', input:{
-      read_id:firstRead?.read_id ?? 'read_id_from_editable_reads',
-      start_line:firstRead?.start_line ?? 1, end_line:firstRead?.start_line ?? 1
-    }}]}),
-    '<<<NEW>>>', 'replacement code', '<<<END>>>'
+    'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
+    'Use the EDIT format below with INDENT. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Prefix every replacement line with its leading-space count and a vertical bar, then the code without leading whitespace. Use 0| for a blank line and t| for a leading tab. Repeat s and t for mixed spaces and tabs. Preserve the project indentation. For deletion, leave one empty line between the header and footer.',
+    'EDIT ' + requestId + ' READ_ID START END_LINE INDENT',
+    '2|first replacement line',
+    '4|nested replacement line',
+    'END ' + requestId
   ].join('\n') : '';
   const systemText = typeof payload.system === 'string' ? payload.system : payload.system.map(b => b.text ?? '').join('\n');
   if (rangeGuide) prompt = prompt.replace('Return one JSON object.', 'Return JSON for ordinary replies. Use the literal source format for EditLines.').replace(
-    '\nCURRENT REQUEST:', '\n\n' + rangeGuide + '\n\nCURRENT REQUEST:'
+    '\nCURRENT REQUEST:', () => '\n\n' + rangeGuide + '\n\nCURRENT REQUEST:'
   );
+  if (testFailures.size) prompt = prompt.replace('\nCURRENT REQUEST:', '\nThe failed_tests field contains the latest failure since a possible workspace change. Inspect the failing assertion and fix its cause before rerunning the same test command.\nCURRENT REQUEST:');
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
-  return {prompt, requestId, validators, choice, snapshots, editableReads, rangeGuide,
+  return {prompt, requestId, validators, choice, snapshots, editableReads, rangeGuide, testFailures,
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditTool.input_schema) : null, model: body.model ?? 'meta-ai-whatsapp'};
 }
 
@@ -221,7 +251,7 @@ export function parseReply(raw, request) {
   let obj;
   try {
     try { obj = JSON.parse(trimmed); }
-    catch { obj = parseCodeFrame(trimmed); }
+    catch { obj = trimmed.startsWith('EDIT ') || trimmed.startsWith('EDIT\t') ? parseLineFrame(trimmed) : parseCodeFrame(trimmed); }
   } catch {
     const error = new GatewayError('Meta AI did not return complete protocol JSON or a code frame.', 502);
     error.repairable = true;
@@ -231,7 +261,7 @@ export function parseReply(raw, request) {
   if (!Array.isArray(obj.content) || !obj.content.length) throw new GatewayError('Meta AI returned no content.', 502);
   const hasLineEdit = request.validateLineEdit && obj.content.some(b => b?.type === 'tool_use' && b.name === 'EditLines');
   if (hasLineEdit && obj.content.filter(b => b?.type === 'tool_use').length !== 1) {
-    throw rangeError('Send one EditLines call without other tools.');
+    throw repairableError('Send one EditLines call without other tools.');
   }
   const blocks = obj.content.map(b => {
     if (b?.type === 'text' && typeof b.text === 'string' && b.text.length) return {type: 'text', text: b.text};
@@ -241,6 +271,12 @@ export function parseReply(raw, request) {
     if (!request.validators.has(name)) throw new GatewayError('Meta AI returned an unknown content block or tool.', 502);
     const input = lineEdit ? resolveLineEdit(b.input, request) : b.input;
     if (!request.validators.get(name)(input)) throw new GatewayError('Meta AI supplied invalid arguments for ' + name + '.', 502);
+    const repeatedTest = testCommand({name, input});
+    if (request.testFailures?.has(repeatedTest)) {
+      const error = repairableError('This test command already failed and no workspace change is recorded. Inspect the failure, then edit or investigate before rerunning it.');
+      error.testFailure = request.testFailures.get(repeatedTest);
+      throw error;
+    }
     const id = (lineEdit ? 'toolu_lines_' : 'toolu_') + randomBytes(12).toString('hex');
     return {type: 'tool_use', id, name, input};
   });

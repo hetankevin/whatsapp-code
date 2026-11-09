@@ -137,3 +137,51 @@ test('range edits reject unobserved lines, stale snapshots, and parallel calls',
   const unnumbered = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:'unnumbered'});
   assert.throws(() => parseReply(reply(unnumbered,call()),unnumbered), /current Read snapshot/);
 });
+
+test('EDIT header preserves fenced source and accepts the observed older inline marker', () => {
+  const request = lineEditRequest();
+  const nonce = request.requestId;
+  const code = '  const quote = \'"\';\n\treturn "\\\\n";';
+  const fence = '\x60'.repeat(3);
+  const reply = 'EDIT '+nonce+' read-x 8 8\n'+fence+'js\n'+code+'\n'+fence+'\nEND '+nonce;
+  const [edit] = parseReply(reply,request).content;
+  assert.equal(edit.input.new_string, 'const a = 1;\n'+code+'\n}');
+  assert.throws(() => parseReply(reply.replace('END '+nonce,'END stale'),request), /complete protocol/);
+  assert.throws(() => parseReply(reply.replaceAll(nonce,'stale'),request), /does not match/);
+  const legacy = JSON.stringify({request_id:nonce,content:[
+    {type:'tool_use',name:'EditLines',input:{read_id:'read-x',start_line:8,end_line:8}}
+  ]}) + ' <<<NEW>>\n' + code + '\n<<<END>>>';
+  assert.deepEqual(parseReply(legacy,request).content[0].input, edit.input);
+});
+
+test('an unchanged failed test gets a repair with the assertion and can rerun after an edit', () => {
+  const tools = ['Bash','Read','Edit'].map(name=>({name,input_schema:{type:'object'}}));
+  const testCall = {type:'tool_use',name:'Bash',input:{command:'node --test'}};
+  const messages = [
+    {role:'user',content:'Fix expiration.'},
+    {role:'assistant',content:[{...testCall,id:'test-one'}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'test-one',is_error:true,
+      content:'Exit code 1\nok 1 - defaults\nnot ok 2 - expires at deadline\nAssertionError: 1 !== undefined'}]},
+    {role:'assistant',content:[{type:'tool_use',name:'Read',id:'r',input:{file_path:'cache.mjs'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'r',content:'1\treturn 1;'}]}
+  ];
+  const run = request => parseReply(JSON.stringify({request_id:request.requestId,content:[testCall]}),request);
+  const blocked = prepare({tools,messages});
+  assert.throws(() => run(blocked), error => error.repairable && /not ok 2 - expires at deadline/.test(error.testFailure));
+  const edited = prepare({tools,messages:[...messages,
+    {role:'assistant',content:[{type:'tool_use',id:'edit',name:'Edit',input:{file_path:'cache.mjs'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'edit',content:'File updated'}]}
+  ]});
+  assert.equal(run(edited).content[0].name, 'Bash');
+  const requested = prepare({tools,messages:[...messages,{role:'user',content:'Run the tests again.'}]});
+  assert.equal(run(requested).content[0].name, 'Bash');
+});
+
+test('encoded indentation survives CRLF framing without changing source characters', () => {
+  const request = lineEditRequest();
+  const nonce = request.requestId;
+  const reply = ['EDIT '+nonce+' read-x 8 8 INDENT', '2|return "\\\\n";', 'st|next();', '0|', 'END '+nonce].join('\r\n');
+  const [edit] = parseReply(reply,request).content;
+  assert.equal(edit.input.new_string, 'const a = 1;\n  return "\\\\n";\r\n \tnext();\r\n\n}');
+  assert.throws(() => parseReply(reply.replace('st|next','next'),request), /complete protocol/);
+});

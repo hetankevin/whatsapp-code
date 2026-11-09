@@ -41,8 +41,8 @@ const server = createGateway({
         assert.ok(JSON.stringify(last.content).includes(secret), 'Read must return the actual fixture content');
         const read = payload.editable_reads.find(read => read.read_id === last.tool_use_id);
         assert.ok(read, 'Claude Code must return a numbered Read snapshot');
-        const frame = tool('EditLines', {read_id:read.read_id, start_line:1, end_line:1}) +
-          '\n<<<NEW>>>\n' + source.slice(0, -1) + '\n<<<END>>>';
+        const frame = 'EDIT ' + request.requestId + ' ' + read.read_id + ' 1 1 INDENT\n' +
+          '0|' + source.slice(0, -1) + '\nEND ' + request.requestId;
         return parseReply(frame, request);
       }
       if (results.length === 2) {

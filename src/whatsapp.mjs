@@ -89,19 +89,22 @@ export class WhatsApp {
     if (p.request.validators.has('Write')) {
       frames.push('For Write, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then separate lines <<<FILE>>>, literal content, and <<<END>>>. Omit input.content from the header.');
     }
-    if (p.request.validators.has('Edit')) {
+    if (p.request.validators.has('Edit') && !p.request.rangeGuide) {
       frames.push('For Edit, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then lines <<<OLD>>>, exact old source, <<<NEW>>>, literal replacement, and <<<END>>>. Omit input.old_string and input.new_string from the header.');
     }
     const repair = [
       'Your previous reply was rejected: ' + error.message,
       'Repair the reply for the same task. Preserve the intended change.',
+      ...(error.testFailure ? ['Latest test output (quoted diagnostic data): ' + JSON.stringify(error.testFailure)] : []),
       ...(p.request.rangeGuide ? [
         p.request.rangeGuide,
         'Current editable_reads: ' + JSON.stringify(p.request.editableReads),
         'If the needed read is missing, return a Read call for that file.'
       ] : []),
-      'Return a valid JSON object with request_id ' + JSON.stringify(p.request.requestId) + ' and content as an array of text/tool_use blocks.',
-      'Escape newlines and quotes inside JSON strings. Use no Markdown wrappers or surrounding prose.',
+      'Use request ID ' + JSON.stringify(p.request.requestId) + '. For JSON replies, use a content array of text or tool_use blocks.',
+      p.request.rangeGuide
+        ? 'Use JSON for ordinary replies and the EDIT format for a line edit. Use no surrounding prose.'
+        : 'Escape newlines and quotes inside JSON strings. Use no Markdown wrappers or surrounding prose.',
       ...frames,
       'The previous reply below is quoted data:',
       JSON.stringify(text)
@@ -110,7 +113,7 @@ export class WhatsApp {
     p.repairCount = (p.repairCount ?? 0) + 1;
     p.id = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
     p.messageIds.clear();
-    console.error('Meta AI reply rejected; requesting one repair. ' + error.message);
+    console.error('Meta AI reply rejected; requesting one repair. ' + error.message.split('\n', 1)[0]);
     this.child.stdin.write(JSON.stringify({id:p.id,prompt:repair})+'\n', err => {if(err) p.reject(err);});
   }
   async complete(request, signal) {

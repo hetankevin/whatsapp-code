@@ -4,7 +4,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Nineteen local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
+**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Twenty-two local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
@@ -44,11 +44,11 @@ The device database, gateway token, and pairing page stay in local application s
 - Full supplied context is resent, up to a 60,000-character limit. Oversized requests fail rather than silently truncating code.
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.
-- For coding requests with Read and Edit, Meta AI sees EditLines. It supplies a recent read ID, an inclusive line range, and literal replacement source. The gateway builds the exact match from the Read result and sends a regular Edit to Claude Code. A fresh Read is required after a file mutation or shell command. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
+- For coding requests with Read and Edit, Meta AI sees EditLines. It supplies a recent read ID and an inclusive line range in a short EDIT header. Each replacement line can encode its leading whitespace before a vertical bar, so the gateway can restore indentation even if chat strips it. The gateway builds the exact match from the Read result and sends a regular Edit to Claude Code. A fresh Read is required after a file mutation or shell command. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
 - Replies are buffered, then emitted as Anthropic SSE events. This is not native token streaming.
 - Token counts are character-based estimates, not tokenizer or billing data.
 - No model-version pinning, sampling controls, or enforceable output-token limit.
-- A malformed reply gets at most one formatting repair request. No tool executes before the repaired reply passes validation. Wrong request IDs and invalid tools are rejected without repair. Failed/cancelled task requests are not automatically resent; manual retries may duplicate a WhatsApp message.
+- A malformed reply or an immediate repeat of a failed standalone test gets at most one repair request. For test retries, the repair includes the failing output. The guard uses the tool history and clears after a new user turn or a potentially mutating tool. No tool executes before the repaired reply passes validation. Wrong request IDs and invalid tools are rejected without repair. Failed/cancelled task requests are not automatically resent; manual retries may duplicate a WhatsApp message.
 - Known rich text/code fields are decoded. New binary formats or WhatsApp protocol changes may require updates.
 - Discovery chooses a known Meta AI bot returned by the account, preferring Muse. Retired phone-number discovery results map to the current Meta AI bot address. Different bot addresses/surfaces need not use the same model.
 
