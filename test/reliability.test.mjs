@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadProjectContext } from '../src/project-context.mjs';
-import { prepare } from '../src/protocol.mjs';
+import { prepare, parseReply } from '../src/protocol.mjs';
 import { WhatsApp } from '../src/whatsapp.mjs';
 
 test('project context identifies the real directory and loads only instruction contents', async () => {
@@ -48,4 +48,45 @@ test('repair is bounded and never repairs a valid JSON reply for the wrong reque
   const other=transportFixture();
   await other.w.event({event:'message',id:'wrong',target:'original',edit:'full',message:{conversation:JSON.stringify({request_id:'wrong',content:[{type:'text',text:'x'}]})}});
   assert.equal(other.writes.length,0);assert.match(other.rejected.message,/match/);
+});
+
+test('only numbered Read results lose their display prefixes', () => {
+  const numbered = '7\tfunction value() {\n8\t\treturn "a";\n9\t}\n';
+  const read = {type:'tool_use', id:'read', name:'Read', input:{file_path:'a.js'}};
+  const bash = {type:'tool_use', id:'bash', name:'Bash', input:{command:'example'}};
+  const messages = [
+    {role:'assistant',content:[read,bash]},
+    {role:'user',content:[
+      {type:'tool_result',tool_use_id:'read',content:[{type:'text',text:numbered}]},
+      {type:'tool_result',tool_use_id:'bash',content:numbered},
+      {type:'tool_result',tool_use_id:'read',content:numbered,is_error:true},
+      {type:'tool_result',tool_use_id:'read',content:'1\tfirst\n3\tthird'}
+    ]}
+  ];
+  const {prompt} = prepare({messages});
+  const payload = JSON.parse(prompt.split('CURRENT REQUEST:\n')[1]);
+  const results = payload.messages[1].content;
+  assert.equal(results[0].content[0].text, 'function value() {\n\treturn "a";\n}\n');
+  assert.equal(results[1].content, numbered);
+  assert.equal(results[2].content, numbered);
+  assert.equal(results[3].content, '1\tfirst\n3\tthird');
+});
+
+test('literal Write and Edit source survives quotes, slashes, indentation, and trailing newline', () => {
+  const tools = [
+    {name:'Write', input_schema:{type:'object', required:['file_path','content'], properties:{file_path:{type:'string'},content:{type:'string'}},additionalProperties:false}},
+    {name:'Edit', input_schema:{type:'object', required:['file_path','old_string','new_string'], properties:{file_path:{type:'string'},old_string:{type:'string'},new_string:{type:'string'}},additionalProperties:false}}
+  ];
+  const request = prepare({tools,messages:[{role:'user',content:'Edit csv'}]});
+  const header = (name,id=request.requestId,input={file_path:'csv.mjs'}) =>
+    JSON.stringify({request_id:id,content:[{type:'tool_use',name,input}]});
+  const oldSource = 'export const c = "\\n";\n';
+  const source = 'export function f(c) {\n  return c === \'"\';\n}\n';
+  const write = header('Write')+'\n<<<FILE>>>\n'+source+'\n<<<END>>>';
+  const edit = header('Edit')+'\n<<<OLD>>>\n'+oldSource+'\n<<<NEW>>>\n'+source+'\n<<<END>>>';
+  assert.equal(parseReply(write,request).content[0].input.content, source);
+  assert.deepEqual(parseReply(edit,request).content[0].input, {file_path:'csv.mjs',old_string:oldSource,new_string:source});
+  assert.throws(() => parseReply(write.replace(request.requestId,'stale'),request), /does not match/);
+  assert.throws(() => parseReply(write.replace('\n<<<END>>>',''),request), /complete protocol/);
+  assert.throws(() => parseReply(write.replace(header('Write'),header('Write',request.requestId,{file_path:5})),request), /invalid arguments/);
 });

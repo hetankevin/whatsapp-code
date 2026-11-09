@@ -4,7 +4,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Fifteen local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
+**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Seventeen local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
@@ -44,11 +44,11 @@ The device database, gateway token, and pairing page stay in local application s
 - Full supplied context is resent, up to a 60,000-character limit. Oversized requests fail rather than silently truncating code.
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.
-- Tool calling uses prompted JSON. Unknown tools, invalid arguments, and mismatched request IDs are rejected.
+- Tool replies use JSON or a JSON header followed by literal source for Write and Edit. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
 - Replies are buffered, then emitted as Anthropic SSE events. This is not native token streaming.
 - Token counts are character-based estimates, not tokenizer or billing data.
 - No model-version pinning, sampling controls, or enforceable output-token limit.
-- Malformed JSON gets at most one formatting-repair request. No tool executes before the repaired reply passes validation. Wrong request IDs and invalid tools are rejected without repair. Failed/cancelled task requests are not automatically resent; manual retries may duplicate a WhatsApp message.
+- A malformed reply gets at most one formatting repair request. No tool executes before the repaired reply passes validation. Wrong request IDs and invalid tools are rejected without repair. Failed/cancelled task requests are not automatically resent; manual retries may duplicate a WhatsApp message.
 - Known rich text/code fields are decoded. New binary formats or WhatsApp protocol changes may require updates.
 - Discovery chooses a known Meta AI bot returned by the account, preferring Muse. Retired phone-number discovery results map to the current Meta AI bot address. Different bot addresses/surfaces need not use the same model.
 
@@ -91,4 +91,4 @@ The live development exercises run with:
 
     python3 scripts/eval_coding.py --prompts compact coding native
 
-This sends prompts and disposable example code through your paired WhatsApp account. It tests a TTL cache fix and CSV parsing against visible and held-out checks, preserves supplied tests, and checks whether the model actually invokes the prescribed test command. Results and traces stay under ignored .work/coding-evals. These are small development exercises, not a general coding benchmark.
+This sends prompts and disposable example code through your paired WhatsApp account. It tests a TTL cache fix and CSV parsing against visible and held-out checks. A pass requires changes confined to the implementation file and a successful test command after the last edit. Results and traces stay under ignored .work/coding-evals. These are small development exercises, not a general coding benchmark.

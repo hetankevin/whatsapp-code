@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -89,7 +90,13 @@ def run_test(project, spec):
     judge = "import assert from 'node:assert/strict';\n" + spec["judge"].replace("MODULE", json.dumps((project / spec["module"]).as_uri()))
     hidden = subprocess.run(["node", "--input-type=module", "-e", judge], cwd=project, capture_output=True, text=True, timeout=20)
     return {"visible": visible.returncode == 0, "held_out": hidden.returncode == 0,
-            "error": (visible.stderr + hidden.stderr)[-2000:]}
+            "error": ((visible.stdout + visible.stderr if visible.returncode else "") + hidden.stderr)[-2000:]}
+
+def is_test_command(command):
+    try:
+        return shlex.split(command)[:2] == ["node", "--test"]
+    except ValueError:
+        return False
 
 def exercise(name, mode, timeout, output):
     spec = SCENARIOS[name]
@@ -133,25 +140,46 @@ def exercise(name, mode, timeout, output):
         for line in stdout.splitlines():
             try: events.append(json.loads(line))
             except json.JSONDecodeError: pass
-        calls = []
-        for event in events:
-            if event.get("type") == "assistant":
-                for block in event.get("message", {}).get("content", []):
-                    if block.get("type") == "tool_use":
-                        calls.append({"name": block["name"], "input": block.get("input", {})})
+        calls = {}
+        successful_results = []
+        for index, event in enumerate(events):
+            blocks = event.get("message", {}).get("content", [])
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                if event.get("type") == "assistant" and block.get("type") == "tool_use":
+                    calls[block["id"]] = block
+                if event.get("type") == "user" and block.get("type") == "tool_result" and not block.get("is_error"):
+                    call = calls.get(block.get("tool_use_id"))
+                    if call:
+                        successful_results.append((index, call))
+
+        last_edit = max((index for index, call in successful_results if call["name"] in ("Write", "Edit")), default=-1)
+        tested = any(
+            index > last_edit and call["name"] == "Bash"
+            and is_test_command(call.get("input", {}).get("command", ""))
+            for index, call in successful_results
+        )
         checked = run_test(project, spec)
+        changed = subprocess.check_output(["git", "diff", "--name-only", "HEAD", "-z"], cwd=project, text=True)
+        untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=project, text=True)
+        implementation_only = changed == spec["module"] + "\0" and not untracked
         instructions_kept = all((project / f).read_text() == text for f, text in fixed.items())
-        tested = any(c["name"] == "Bash" and "node --test" in c["input"].get("command", "") for c in calls)
-        read_instructions = any(c["name"] == "Read" and str(c["input"].get("file_path", "")).endswith("AGENTS.md") for c in calls)
+        read_instructions = any(
+            call["name"] == "Read" and str(call.get("input", {}).get("file_path", "")).endswith("AGENTS.md")
+            for call in calls.values()
+        )
+        api_error = next((e.get("result", "") for e in reversed(events) if e.get("type") == "result" and e.get("is_error")), "")
         usage = [e.get("message", {}).get("usage", {}).get("input_tokens", 0) for e in events if e.get("type") == "assistant"]
         result = {
             "scenario": name, "prompt": mode, "exit_code": code, "timed_out": timed_out,
             "seconds": round(time.monotonic() - start, 1), **checked,
-            "instructions_kept": instructions_kept, "read_instructions": read_instructions,
-            "ran_tests": tested, "tool_calls": [c["name"] for c in calls],
+            "instructions_kept": instructions_kept, "implementation_only": implementation_only,
+            "read_instructions": read_instructions,
+            "passed_tests_after_edit": tested, "tool_calls": [c["name"] for c in calls.values()],
             "max_estimated_input_tokens": max(usage, default=0),
-            "passed": code == 0 and checked["visible"] and checked["held_out"] and instructions_kept and tested,
-            "stderr_tail": stderr[-1800:],
+            "passed": code == 0 and not api_error and checked["visible"] and checked["held_out"] and implementation_only and instructions_kept and tested,
+            "stderr_tail": stderr[-1800:], "api_error": api_error,
         }
         stem = mode + "-" + name
         (output / (stem + ".json")).write_text(json.dumps(result, indent=2) + "\n")
@@ -159,7 +187,7 @@ def exercise(name, mode, timeout, output):
         (output / (stem + ".diff")).write_text(subprocess.run(["git", "diff"], cwd=project, capture_output=True, text=True).stdout)
         print(json.dumps({k:v for k,v in result.items() if k not in ["error", "stderr_tail"]}), flush=True)
         if not result["passed"]:
-            print("failure detail: " + (stderr[-700:] or stdout[-1000:]), flush=True)
+            print("failure detail: " + (api_error or checked["error"][-700:] or stderr[-700:] or stdout[-1000:]), flush=True)
         return result
     finally:
         shutil.rmtree(holder)

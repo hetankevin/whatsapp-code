@@ -6,15 +6,67 @@ export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
 
-function content(blocks) {
+// Claude Code prefixes each line of a text Read with its display line number.
+function withoutReadLabels(text) {
+  const lines = text.split('\n');
+  let previousLine;
+  for (let i = 0; i < lines.length; i++) {
+    if (i === lines.length - 1 && lines[i] === '') break;
+    const match = /^ *(\d+)\t([\s\S]*)$/.exec(lines[i]);
+    if (!match) return text;
+    const line = Number(match[1]);
+    if (!Number.isSafeInteger(line) || line < 1 ||
+        (previousLine !== undefined && line !== previousLine + 1)) return text;
+    lines[i] = match[2];
+    previousLine = line;
+  }
+  return lines.join('\n');
+}
+
+function content(blocks, readIds) {
   if (typeof blocks === 'string') return blocks;
   if (!Array.isArray(blocks)) throw new GatewayError('Expected text or content blocks.');
   return blocks.map(b => {
     if (b.type === 'text') return { type: 'text', text: b.text };
     if (b.type === 'tool_use') return { type: b.type, id: b.id, name: b.name, input: b.input };
-    if (b.type === 'tool_result') return { type: b.type, tool_use_id: b.tool_use_id, is_error: !!b.is_error, content: content(b.content ?? '') };
+    if (b.type === 'tool_result') {
+      let result = content(b.content ?? '');
+      if (!b.is_error && readIds?.has(b.tool_use_id)) {
+        result = typeof result === 'string'
+          ? withoutReadLabels(result)
+          : result.map(block => block.type === 'text' ? {...block, text: withoutReadLabels(block.text)} : block);
+      }
+      return {type: b.type, tool_use_id: b.tool_use_id, is_error: !!b.is_error, content: result};
+    }
     throw new GatewayError(`Unsupported content type: ${b.type}. This gateway accepts text and client tool calls only.`);
   });
+}
+
+// JSON carries metadata and the framed text carries literal source.
+function parseCodeFrame(text) {
+  const match = /^([^\n]+)\n<<<(FILE|OLD)>>>\n([\s\S]*)\n<<<END>>>$/.exec(text);
+  if (!match) throw new SyntaxError('Missing code frame markers.');
+  const [, header, kind, source] = match;
+  const reply = JSON.parse(header);
+  if (!Array.isArray(reply?.content) || reply.content.length !== 1) {
+    throw new SyntaxError('A code frame requires exactly one tool call.');
+  }
+  const [call] = reply.content;
+  const input = call?.input;
+  if (call?.type !== 'tool_use' || !input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SyntaxError('Invalid code frame header.');
+  }
+  if (kind === 'FILE' && call.name === 'Write' && !Object.hasOwn(input, 'content')) {
+    input.content = source;
+  } else if (kind === 'OLD' && call.name === 'Edit' &&
+             !Object.hasOwn(input, 'old_string') && !Object.hasOwn(input, 'new_string')) {
+    const sections = source.split('\n<<<NEW>>>\n');
+    if (sections.length !== 2) throw new SyntaxError('An edit frame requires one NEW marker.');
+    [input.old_string, input.new_string] = sections;
+  } else {
+    throw new SyntaxError('Code frame fields conflict with its tool or header.');
+  }
+  return reply;
 }
 
 export function prepare(body, maxChars = 60000) {
@@ -33,6 +85,7 @@ export function prepare(body, maxChars = 60000) {
     catch (error) { throw new GatewayError(`Invalid input schema for ${t.name}: ${error.message}`); }
   }
   const requestId = randomBytes(12).toString('hex');
+  const readIds = new Set();
   const payload = {
     request_id: requestId,
     system: content(body.system ?? ''),
@@ -40,10 +93,28 @@ export function prepare(body, maxChars = 60000) {
     tool_choice: body.tool_choice ?? {type: 'auto'},
     messages: body.messages.map(m => {
       if (!['user', 'assistant'].includes(m.role)) throw new GatewayError('Invalid message role.');
-      return {role: m.role, content: content(m.content)};
+      if (m.role === 'assistant' && Array.isArray(m.content)) {
+        for (const block of m.content) {
+          if (block.type === 'tool_use' && block.name === 'Read') readIds.add(block.id);
+        }
+      }
+      return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined)};
     })
   };
-  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn ONLY one JSON object, with no Markdown or explanation outside it:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
+  const frames = [];
+  if (validators.has('Write')) frames.push([
+    'For file writes containing code, use this literal source format:',
+    JSON.stringify({request_id:requestId, content:[{type:'tool_use', name:'Write', input:{file_path:'path'}}]}),
+    '<<<FILE>>>', 'literal file content', '<<<END>>>'
+  ].join('\n'));
+  if (validators.has('Edit')) frames.push([
+    'For edits containing quotes or multiple lines, prefer this literal source format:',
+    JSON.stringify({request_id:requestId, content:[{type:'tool_use', name:'Edit', input:{file_path:'path'}}]}),
+    '<<<OLD>>>', 'exact old text', '<<<NEW>>>', 'literal replacement text', '<<<END>>>'
+  ].join('\n'));
+  if (frames.length) frames.push('For a code frame, output exactly one JSON header line followed by the markers and literal source. Omit source fields from the header. Use no Markdown fences. Markers are framing. To preserve a trailing source newline, include a blank line before its next marker.');
+  const frameGuidance = frames.length ? '\n' + frames.join('\n\n') : '';
+  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object or one code frame as specified below. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.${frameGuidance}\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
   const systemText = typeof payload.system === 'string' ? payload.system : payload.system.map(b => b.text ?? '').join('\n');
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
@@ -53,8 +124,15 @@ export function prepare(body, maxChars = 60000) {
 export function parseReply(raw, request) {
   const trimmed = raw.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '').trim();
   let obj;
-  try { obj = JSON.parse(trimmed); } catch { const error = new GatewayError('Meta AI did not return complete protocol JSON.', 502); error.repairable = true; throw error; }
-  if (obj.request_id !== request.requestId) throw new GatewayError('Meta AI reply does not match this request.', 502);
+  try {
+    try { obj = JSON.parse(trimmed); }
+    catch { obj = parseCodeFrame(trimmed); }
+  } catch {
+    const error = new GatewayError('Meta AI did not return complete protocol JSON or a code frame.', 502);
+    error.repairable = true;
+    throw error;
+  }
+  if (obj?.request_id !== request.requestId) throw new GatewayError('Meta AI reply does not match this request.', 502);
   if (!Array.isArray(obj.content) || !obj.content.length) throw new GatewayError('Meta AI returned no content.', 502);
   const blocks = obj.content.map(b => {
     if (b.type === 'text' && typeof b.text === 'string' && b.text.length) return {type: 'text', text: b.text};
