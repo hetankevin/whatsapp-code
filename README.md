@@ -28,7 +28,7 @@ For a first check:
 
     node /path/to/whatsapp-code/src/launch.mjs -p 'Reply with hello.'
 
-The launcher uses a compact coding prompt and Read, Write, Edit, Glob, Grep, and Bash. Claude Code's bare mode avoids importing ordinary hooks and MCP servers. The launcher supplies the actual working directory, a root file listing, and root AGENTS.md/CLAUDE.md contents to Meta AI; it does not read unrelated file contents. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
+The launcher uses a compact coding prompt and requests the Read, Write, Edit, Glob, Grep, and Bash tools. Claude Code selects which tools appear in the request. Claude Code's bare mode avoids importing ordinary hooks and MCP servers. The launcher supplies the actual working directory, a root file listing, and root AGENTS.md/CLAUDE.md contents to Meta AI; it does not read unrelated file contents. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
 
 ## Data and access
 
@@ -44,7 +44,7 @@ The device database, gateway token, and pairing page stay in local application s
 - Full supplied context is resent, up to a 60,000-character limit. Oversized requests fail rather than silently truncating code.
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.
-- Tool replies use JSON or a JSON header followed by literal source for Write and Edit. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
+- Tool replies use JSON. A formatting repair can use a JSON header followed by literal source for Write or Edit when the client supplies that tool. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
 - Replies are buffered, then emitted as Anthropic SSE events. This is not native token streaming.
 - Token counts are character-based estimates, not tokenizer or billing data.
 - No model-version pinning, sampling controls, or enforceable output-token limit.
@@ -70,7 +70,7 @@ The live test used 867051314767696@bot. The legacy phone address failed, and Mus
     npm test
     npm run test:claude
 
-The second command runs actual Claude Code in a temporary directory against a local fake model, verifies a file read, and makes no WhatsApp/model-provider calls. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
+The second command runs Claude Code in a temporary directory against a local fake model. It reads a fixture, edits it through the literal-source format, runs it, and verifies the output. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
 
 Dependencies are pinned in package-lock.json and transport/go.sum. Original code is MIT licensed; dependencies retain their licenses.
 
@@ -92,3 +92,5 @@ The live development exercises run with:
     python3 scripts/eval_coding.py --prompts compact coding native
 
 This sends prompts and disposable example code through your paired WhatsApp account. It tests a TTL cache fix and CSV parsing against visible and held-out checks. A pass requires changes confined to the implementation file and a successful test command after the last edit. Results and traces stay under ignored .work/coding-evals. These are small development exercises, not a general coding benchmark.
+
+The first three-prompt comparison completed one of six runs. Compact passed the cache task, and all three prompts failed CSV. Follow-up runs on the two tasks also failed. The observed problems include malformed tool replies, edits that differ from the file's exact whitespace, and ending a turn after a failed test. The compact prompt remains the default. These runs are too small to rank the prompts reliably.

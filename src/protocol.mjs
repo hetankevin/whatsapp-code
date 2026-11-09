@@ -101,20 +101,7 @@ export function prepare(body, maxChars = 60000) {
       return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined)};
     })
   };
-  const frames = [];
-  if (validators.has('Write')) frames.push([
-    'For file writes containing code, use this literal source format:',
-    JSON.stringify({request_id:requestId, content:[{type:'tool_use', name:'Write', input:{file_path:'path'}}]}),
-    '<<<FILE>>>', 'literal file content', '<<<END>>>'
-  ].join('\n'));
-  if (validators.has('Edit')) frames.push([
-    'For edits containing quotes or multiple lines, prefer this literal source format:',
-    JSON.stringify({request_id:requestId, content:[{type:'tool_use', name:'Edit', input:{file_path:'path'}}]}),
-    '<<<OLD>>>', 'exact old text', '<<<NEW>>>', 'literal replacement text', '<<<END>>>'
-  ].join('\n'));
-  if (frames.length) frames.push('For a code frame, output exactly one JSON header line followed by the markers and literal source. Omit source fields from the header. Use no Markdown fences. Markers are framing. To preserve a trailing source newline, include a blank line before its next marker.');
-  const frameGuidance = frames.length ? '\n' + frames.join('\n\n') : '';
-  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object or one code frame as specified below. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.${frameGuidance}\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
+  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
   const systemText = typeof payload.system === 'string' ? payload.system : payload.system.map(b => b.text ?? '').join('\n');
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);

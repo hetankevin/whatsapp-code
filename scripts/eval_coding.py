@@ -98,7 +98,7 @@ def is_test_command(command):
     except ValueError:
         return False
 
-def exercise(name, mode, timeout, output):
+def exercise(name, mode, timeout, output, tools):
     spec = SCENARIOS[name]
     holder = Path(tempfile.mkdtemp(prefix="whatsapp-code-eval-"))
     project = holder / "project"; project.mkdir()
@@ -115,7 +115,7 @@ def exercise(name, mode, timeout, output):
     command = ["node", str(ROOT / "src/launch.mjs"), "--harness-prompt", mode,
                "--print", "--verbose", "--output-format", "stream-json",
                "--no-session-persistence", "--restricted", "--permission-mode", "dontAsk",
-               "--tools", "Read,Edit,Write,Glob,Grep,Bash",
+               "--tools", tools,
                "--allowedTools", "Read", "Edit", "Write", "Glob", "Grep",
                "Bash(node --test*)", "Bash(git diff*)", "Bash(ls*)", "Bash(pwd)",
                "--", spec["task"]]
@@ -172,7 +172,8 @@ def exercise(name, mode, timeout, output):
         api_error = next((e.get("result", "") for e in reversed(events) if e.get("type") == "result" and e.get("is_error")), "")
         usage = [e.get("message", {}).get("usage", {}).get("input_tokens", 0) for e in events if e.get("type") == "assistant"]
         result = {
-            "scenario": name, "prompt": mode, "exit_code": code, "timed_out": timed_out,
+            "scenario": name, "prompt": mode, "tools": tools.split(","),
+            "exit_code": code, "timed_out": timed_out,
             "seconds": round(time.monotonic() - start, 1), **checked,
             "instructions_kept": instructions_kept, "implementation_only": implementation_only,
             "read_instructions": read_instructions,
@@ -196,10 +197,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompts", nargs="+", choices=["compact", "coding", "native"], default=["compact", "coding"])
     parser.add_argument("--tasks", nargs="+", choices=list(SCENARIOS), default=list(SCENARIOS))
+    parser.add_argument("--tools", choices=["Read,Edit,Write,Glob,Grep,Bash", "Read,Write,Bash"], default="Read,Edit,Write,Glob,Grep,Bash")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--output", type=Path, default=ROOT / ".work" / "coding-evals")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     for mode in args.prompts:
         for name in args.tasks:
-            exercise(name, mode, args.timeout, args.output)
+            exercise(name, mode, args.timeout, args.output, args.tools)
