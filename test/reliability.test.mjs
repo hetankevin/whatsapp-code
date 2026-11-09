@@ -185,3 +185,19 @@ test('encoded indentation survives CRLF framing without changing source characte
   assert.equal(edit.input.new_string, 'const a = 1;\n  return "\\\\n";\r\n \tnext();\r\n\n}');
   assert.throws(() => parseReply(reply.replace('st|next','next'),request), /complete protocol/);
 });
+
+test('nested EDIT headers never become source and are unwrapped only for matching metadata', () => {
+  const request = lineEditRequest();
+  const nonce = request.requestId;
+  const nested = 'EDIT '+nonce+' read-x 8 8\n2|return "value";\n0|\nEND '+nonce;
+  const reply = (new_string, end_line=8) => JSON.stringify({request_id:nonce, content:[
+    {type:'tool_use',name:'EditLines',input:{read_id:'read-x',start_line:8,end_line,new_string}}
+  ]});
+  const [edit] = parseReply(reply(nested),request).content;
+  assert.equal(edit.input.new_string, 'const a = 1;\n  return "value";\n\n}');
+  assert.throws(() => parseReply(reply(nested,9),request), /disagrees/);
+  assert.throws(() => parseReply(reply(nested.replace('END '+nonce,'END wrong')),request), /one complete EDIT frame/);
+  assert.throws(() => parseReply(reply(nested.replaceAll(nonce,'0'.repeat(24))),request), /stale request ID/);
+  const literal = '2|3';
+  assert.equal(parseReply(reply(literal),request).content[0].input.new_string, 'const a = 1;\n2|3\n}');
+});

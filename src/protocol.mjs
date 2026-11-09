@@ -94,7 +94,22 @@ function repairableError(message) {
 
 function resolveLineEdit(input, request) {
   if (!request.validateLineEdit?.(input)) throw repairableError('EditLines needs a read_id, two line numbers, and replacement source.');
-  const {read_id, start_line, end_line, new_string} = input;
+  const {read_id, start_line, end_line} = input;
+  let replacement = input.new_string;
+  const embedded = replacement.trim();
+  if (/^EDIT[ \t]+[0-9a-f]{24}(?:[ \t]|\r?\n|$)/.test(embedded)) {
+    // A live reply wrapped a complete EDIT frame in the replacement string.
+    // Only unwrap the current request and the exact same snapshot and range.
+    let decoded;
+    try { decoded = parseLineFrame(embedded, true); }
+    catch { throw repairableError('Send one complete EDIT frame, outside the replacement source.'); }
+    if (decoded.request_id !== request.requestId) throw repairableError('Nested EDIT uses a stale request ID. Send one EDIT frame for this request.');
+    const nested = decoded.content[0].input;
+    if (nested.read_id !== read_id || nested.start_line !== start_line || nested.end_line !== end_line) {
+      throw repairableError('Nested EDIT metadata disagrees with the requested range. Send one EDIT frame.');
+    }
+    replacement = nested.new_string;
+  }
   const snapshot = request.snapshots.get(read_id);
   if (!snapshot) throw repairableError('EditLines needs a current Read snapshot. Use a read_id from editable_reads or call Read again.');
   const {first, lines, filePath} = snapshot;
@@ -104,7 +119,7 @@ function resolveLineEdit(input, request) {
   // Use the whole observed excerpt as the exact match. The real Edit tool
   // checks for file changes and ambiguity before modifying anything.
   const updated = [...lines];
-  updated.splice(start_line - first, end_line - start_line + 1, ...(new_string === '' ? [] : new_string.split('\n')));
+  updated.splice(start_line - first, end_line - start_line + 1, ...(replacement === '' ? [] : replacement.split('\n')));
   return {file_path: filePath, old_string: lines.join('\n'), new_string: updated.join('\n')};
 }
 
@@ -127,10 +142,12 @@ function content(blocks, readIds, snapshots) {
   });
 }
 
+const indentationPrefix = /^(\d{1,3}|[st]{1,128})\|([\s\S]*)$/;
+
 function decodeIndentation(source) {
   if (source === '') return '';
   return source.split('\n').map(line => {
-    const match = /^(\d{1,3}|[st]{1,128})\|([\s\S]*)$/.exec(line);
+    const match = indentationPrefix.exec(line);
     if (!match) throw new SyntaxError('Indented source needs an indentation prefix on each line.');
     const [, prefix, code] = match;
     const indentation = /^\d/.test(prefix)
@@ -141,15 +158,17 @@ function decodeIndentation(source) {
 }
 
 // A short header avoids putting code or delimiter punctuation inside JSON.
-function parseLineFrame(text) {
+function parseLineFrame(text, inferIndent = false) {
   const match = /^EDIT[ \t]+(\S+)[ \t]+(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n([\s\S]*?)\r?\nEND[ \t]+(\S+)$/.exec(text);
   if (!match || match[1] !== match[7]) throw new SyntaxError('Incomplete EDIT frame.');
   const [, request_id, read_id, start, end, mode, body] = match;
   const fence = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/.exec(body);
   const source = fence ? fence[2] : body;
+  const encoded = mode === 'INDENT' ||
+    (inferIndent && source.split('\n').every(line => indentationPrefix.test(line)));
   return {request_id, content:[{
     type:'tool_use', name:'EditLines',
-    input:{read_id, start_line:Number(start), end_line:Number(end), new_string:mode === 'INDENT' ? decodeIndentation(source) : source}
+    input:{read_id, start_line:Number(start), end_line:Number(end), new_string:encoded ? decodeIndentation(source) : source}
   }]};
 }
 
@@ -229,10 +248,9 @@ export function prepare(body, maxChars = 60000) {
   let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
   const rangeGuide = rangeEnabled ? [
     'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
-    'Use the EDIT format below with INDENT. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Prefix every replacement line with its leading-space count and a vertical bar, then the code without leading whitespace. Use 0| for a blank line and t| for a leading tab. Repeat s and t for mixed spaces and tabs. Preserve the project indentation. For deletion, leave one empty line between the header and footer.',
-    'EDIT ' + requestId + ' READ_ID START END_LINE INDENT',
-    '2|first replacement line',
-    '4|nested replacement line',
+    'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement lines between the header and footer. A fenced code block around the replacement is encouraged to preserve indentation. To delete the selected lines, leave one empty line between the header and footer.',
+    'EDIT ' + requestId + ' READ_ID START END_LINE',
+    'literal replacement code',
     'END ' + requestId
   ].join('\n') : '';
   const systemText = typeof payload.system === 'string' ? payload.system : payload.system.map(b => b.text ?? '').join('\n');

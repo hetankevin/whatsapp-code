@@ -99,7 +99,8 @@ export class WhatsApp {
       ...(p.request.rangeGuide ? [
         p.request.rangeGuide,
         'Current editable_reads: ' + JSON.stringify(p.request.editableReads),
-        'If the needed read is missing, return a Read call for that file.'
+        'If the needed read is missing, return a Read call for that file.',
+        'For a source reply, keep the EDIT header and footer outside the replacement. If indentation needs encoding, add INDENT after the end line in the EDIT header. Prefix each source line with the space count and | (for example, 4|return value;). Use 0| for blank lines or s and t for explicit spaces and tabs.'
       ] : []),
       'Use request ID ' + JSON.stringify(p.request.requestId) + '. For JSON replies, use a content array of text or tool_use blocks.',
       p.request.rangeGuide
