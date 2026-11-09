@@ -219,3 +219,58 @@ test('recover a complete EDIT frame inside malformed JSON without changing liter
   assert.throws(() => parseReply(wrap(frame.split('\nEND ')[0]),request), /complete protocol/);
   assert.throws(() => parseReply(wrap(frame).replace('"EditLines"','"Edit"'),request), /complete protocol/);
 });
+
+test('snapshot context keeps one current read and the latest test outcome', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const call = (id, name, input) => ({role: 'assistant', content: [{type: 'tool_use', id, name, input}]});
+  const result = (id, content, is_error = false) => ({
+    role: 'user', content: [{type: 'tool_result', tool_use_id: id, content, is_error}]
+  });
+  const messages = [
+    {role: 'user', content: 'Fix CSV.'},
+    call('old', 'Read', {file_path: 'csv.mjs'}),
+    result('old', '1\tobsolete source'),
+    call('failed', 'Bash', {command: 'node --test'}),
+    result('failed', 'not ok 1 - quoted empty field', true),
+    call('notes', 'Read', {file_path: 'AGENTS.md'}),
+    result('notes', '1\tolder instructions read'),
+    call('current', 'Read', {file_path: 'csv.mjs'}),
+    result('current', '1\texport function parseCSV() {\n2\t  return [];\n3\t}')
+  ];
+  const prepareSnapshot = extra => prepare({tools, messages: [...messages, ...extra]}, 60000, true);
+  const payload = request => JSON.parse(request.prompt.split('CURRENT REQUEST:\n')[1]);
+  const request = prepareSnapshot([]);
+  const state = payload(request);
+  assert.equal(state.task, 'Fix CSV.');
+  assert.equal(state.current_file, messages.at(-1).content[0].content);
+  assert.deepEqual(state.editable_reads.map(read => read.read_id), ['current']);
+  assert.deepEqual(state.latest_test_failure, {command: 'node --test', failure: 'not ok 1 - quoted empty field'});
+  assert.doesNotMatch(request.prompt, /obsolete source|older instructions read|"messages":/);
+  const edit = readId => 'EDIT ' + request.requestId + ' ' + readId + ' 2 2\n  return [[""]];\nEND ' + request.requestId;
+  assert.throws(() => parseReply(edit('notes'), request), /current Read snapshot/);
+  assert.equal(parseReply(edit('current'), request).content[0].input.new_string,
+    'export function parseCSV() {\n  return [[""]];\n}');
+
+  const edited = [
+    call('edit', 'Edit', {file_path: 'csv.mjs'}),
+    result('edit', 'file updated')
+  ];
+  const afterEdit = payload(prepareSnapshot(edited));
+  assert.equal(afterEdit.current_file, undefined);
+  assert.equal(afterEdit.latest_test_failure.failure, state.latest_test_failure.failure);
+  assert.deepEqual(afterEdit.last_tool_status, [{tool: 'Edit', file_path: 'csv.mjs', status: 'succeeded'}]);
+
+  const syntaxError = '# file:///project/csv.mjs:58\n# SyntaxError: Unexpected end of input';
+  const failedAgain = payload(prepareSnapshot([...edited,
+    call('syntax', 'Bash', {command: 'node --test'}),
+    result('syntax', 'TAP version 13\n' + syntaxError + '\nnot ok 1 - behavior.test.mjs', true)
+  ]));
+  assert.ok(failedAgain.latest_test_failure.failure.startsWith(syntaxError));
+
+  const passed = payload(prepareSnapshot([...edited,
+    call('passed', 'Bash', {command: 'node --test'}),
+    result('passed', 'ok 1 - quoted empty field')
+  ]));
+  assert.equal(passed.latest_test_failure, undefined);
+  assert.deepEqual(passed.last_tool_status, [{tool: 'Bash', command: 'node --test', status: 'succeeded'}]);
+});

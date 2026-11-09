@@ -17,11 +17,14 @@ function failureExcerpt(content) {
     ? content.filter(block => block.type === 'text').map(block => block.text).join('\n')
     : '';
   const lines = text.split('\n');
-  const failure = lines.findIndex(line => /^(?:not ok\b|FAIL\b|E\s{2,}|AssertionError\b)/.test(line));
-  return lines.slice(Math.max(failure, 0), Math.max(failure, 0) + 16).join('\n').slice(0, 1000);
+  const failure = lines.findIndex(line => /^(?:not ok\b|FAIL\b|E\s{2,}|AssertionError\b|# SyntaxError:)/.test(line));
+  const hasSyntaxError = lines[failure]?.startsWith('# SyntaxError:');
+  const start = Math.max(hasSyntaxError ? failure - 1 : failure, 0);
+  return lines.slice(start, start + 16).join('\n').slice(0, 1000);
 }
 
-export function failedTests(messages) {
+export function testState(messages) {
+  let latestFailure;
   const failures = new Map();
   const pending = new Map();
   for (const message of messages) {
@@ -42,15 +45,22 @@ export function failedTests(messages) {
       if (!results.length && (typeof message.content === 'string' || blocks.some(block => block.type === 'text'))) {
         failures.clear();
         pending.clear();
+        latestFailure = undefined;
       }
       for (const result of results) {
         const command = pending.get(result.tool_use_id);
         if (!command) continue;
         pending.delete(result.tool_use_id);
-        if (result.is_error) failures.set(command, failureExcerpt(result.content));
-        else failures.delete(command);
+        if (result.is_error) {
+          const failure = failureExcerpt(result.content);
+          failures.set(command, failure);
+          latestFailure = {command, failure};
+        } else {
+          failures.delete(command);
+          if (latestFailure?.command === command) latestFailure = undefined;
+        }
       }
     }
   }
-  return failures;
+  return {failures, latestFailure};
 }

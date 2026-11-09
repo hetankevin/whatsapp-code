@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { failedTests, testCommand } from './failed-tests.mjs';
+import { testState, testCommand } from './failed-tests.mjs';
 
 export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -223,7 +223,32 @@ function parseWrappedLineFrame(text) {
   return reply;
 }
 
-export function prepare(body, maxChars = 60000) {
+function latestTaskIndex(messages) {
+  return messages.findLastIndex(message => message.role === 'user' &&
+    (typeof message.content === 'string' || (Array.isArray(message.content) &&
+      message.content.some(block => block.type === 'text') &&
+      !message.content.some(block => block.type === 'tool_result'))));
+}
+
+function latestToolStatus(messages) {
+  const last = messages.at(-1);
+  if (last?.role !== 'user' || !Array.isArray(last.content)) return undefined;
+  const results = last.content.filter(block => block.type === 'tool_result');
+  const previous = messages.at(-2);
+  if (!results.length || previous?.role !== 'assistant' || !Array.isArray(previous.content)) return undefined;
+  const calls = previous.content.filter(block => block.type === 'tool_use');
+  return results.flatMap(result => {
+    const call = calls.find(candidate => candidate.id === result.tool_use_id);
+    return call ? [{
+      tool: call.name,
+      file_path: call.input?.file_path,
+      command: testCommand(call) ?? undefined,
+      status: result.is_error ? 'failed' : 'succeeded'
+    }] : [];
+  });
+}
+
+export function prepare(body, maxChars = 60000, snapshotContext = false) {
   if (!Array.isArray(body.messages) || !body.messages.length) throw new GatewayError('messages must be a nonempty array.');
   if (body.thinking && body.thinking.type !== 'disabled') throw new GatewayError('Extended thinking is unavailable. Set MAX_THINKING_TOKENS=0.');
   if (body.output_config?.format || body.output_format) throw new GatewayError('Structured output API options are unsupported.');
@@ -242,42 +267,65 @@ export function prepare(body, maxChars = 60000) {
   const choice = body.tool_choice ?? {type: 'auto'};
   const rangeEnabled = validators.has('Read') && validators.has('Edit') &&
     ['auto', 'any'].includes(choice.type) && !validators.has('EditLines');
-  const snapshots = rangeEnabled ? trackReads(body.messages) : new Map();
+  const taskIndex = snapshotContext ? latestTaskIndex(body.messages) : -1;
+  // Use the usual context when there is no standalone user task to anchor the snapshot.
+  const useSnapshot = taskIndex >= 0;
+  const taskMessages = useSnapshot ? body.messages.slice(taskIndex) : body.messages;
+  const reads = rangeEnabled ? trackReads(taskMessages) : new Map();
+  const snapshots = useSnapshot ? new Map([...reads].slice(-1)) : reads;
   const editableReads = [...snapshots].map(([read_id, {filePath, first, lines}]) =>
     ({read_id, file_path:filePath, start_line:first, end_line:first + lines.length - 1}));
   const modelTools = rangeEnabled ? tools.map(tool => tool.name === 'Edit' ? lineEditTool : tool) : tools;
-  const testFailures = choice.type === 'auto' ? failedTests(body.messages) : new Map();
+  const {failures, latestFailure} = testState(taskMessages);
+  const testFailures = choice.type === 'auto' ? failures : new Map();
   const readIds = new Set();
+  const messages = body.messages.map(m => {
+    if (!['user', 'assistant'].includes(m.role)) throw new GatewayError('Invalid message role.');
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
+      for (const block of m.content) {
+        if (block.type === 'tool_use' && block.name === 'Read') readIds.add(block.id);
+      }
+    }
+    return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined, snapshots)};
+  });
+  const [currentRead] = snapshots.values();
   const payload = {
     request_id: requestId,
-    system: content(body.system ?? ''),
     tools: modelTools.map(({name, description, input_schema}) => ({name, description, input_schema})),
     tool_choice: choice,
     editable_reads: rangeEnabled ? editableReads : undefined,
-    failed_tests: testFailures.size ? [...testFailures].slice(-2).map(([command, failure]) => ({command, failure})) : undefined,
-    messages: body.messages.map(m => {
-      if (!['user', 'assistant'].includes(m.role)) throw new GatewayError('Invalid message role.');
-      if (m.role === 'assistant' && Array.isArray(m.content)) {
-        for (const block of m.content) {
-          if (block.type === 'tool_use' && block.name === 'Read') readIds.add(block.id);
-        }
-      }
-      return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined, snapshots)};
+    ...(useSnapshot ? {
+      task: messages[taskIndex].content,
+      current_file: currentRead?.lines.map((line, index) => (currentRead.first + index) + '\t' + line).join('\n'),
+      latest_test_failure: latestFailure,
+      last_tool_status: latestToolStatus(taskMessages)
+    } : {
+      failed_tests: testFailures.size ? [...testFailures].slice(-2).map(([command, failure]) => ({command, failure})) : undefined,
+      messages
     })
   };
-  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify({...payload, system: undefined})}`;
+  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
   const rangeGuide = rangeEnabled ? [
     'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
-    'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement lines between the header and footer. A fenced code block around the replacement is encouraged to preserve indentation. To delete the selected lines, leave one empty line between the header and footer.',
+    'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement lines between the header and footer. ' +
+      (useSnapshot
+      ? 'Send bare code between the markers. Omit Markdown fences. To encode indentation, append INDENT to the EDIT header and prefix every line with its space count and | (for example 2|return value;).'
+      : 'A fenced code block around the replacement is encouraged to preserve indentation.') +
+      ' To delete the selected lines, leave one empty line between the header and footer.',
     'EDIT ' + requestId + ' READ_ID START END_LINE',
     'literal replacement code',
     'END ' + requestId
   ].join('\n') : '';
-  const systemText = typeof payload.system === 'string' ? payload.system : payload.system.map(b => b.text ?? '').join('\n');
+  const system = content(body.system ?? '');
+  const systemText = typeof system === 'string' ? system : system.map(b => b.text ?? '').join('\n');
   if (rangeGuide) prompt = prompt.replace('Return one JSON object.', 'Return JSON for ordinary replies. Use the literal source format for EditLines.').replace(
     '\nCURRENT REQUEST:', () => '\n\n' + rangeGuide + '\n\nCURRENT REQUEST:'
   );
-  if (testFailures.size) prompt = prompt.replace('\nCURRENT REQUEST:', '\nThe failed_tests field contains the latest failure since a possible workspace change. Inspect the failing assertion and fix its cause before rerunning the same test command.\nCURRENT REQUEST:');
+  if (useSnapshot) {
+    prompt = prompt.replace('The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context.',
+      'Use only the supplied task and current tool state. Ignore earlier WhatsApp messages.');
+    prompt = prompt.replace('\nCURRENT REQUEST:', '\ncurrent_file contains the numbered source for the single editable read, if available. last_tool_status reports the actual outcome of the latest tools. latest_test_failure may predate an edit. After a successful edit, run the tests. If a test failed and you need current source, Read the implementation again.\nCURRENT REQUEST:');
+  } else if (testFailures.size) prompt = prompt.replace('\nCURRENT REQUEST:', '\nThe failed_tests field contains the latest failure since a possible workspace change. Inspect the failing assertion and fix its cause before rerunning the same test command.\nCURRENT REQUEST:');
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   return {prompt, requestId, validators, choice, snapshots, editableReads, rangeGuide, testFailures,

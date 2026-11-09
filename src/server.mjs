@@ -6,7 +6,7 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { GatewayError, prepare, streamMessage } from './protocol.mjs';
 
-export function createGateway({backend, token, maxChars = 60000}) {
+export function createGateway({backend, token, maxChars = 60000, snapshotContext = false}) {
   let busy = false;
   return http.createServer(async (req, res) => {
     const sendJSON = (status, obj) => {res.writeHead(status, {'content-type':'application/json','cache-control':'no-store'}); res.end(JSON.stringify(obj));};
@@ -28,7 +28,7 @@ export function createGateway({backend, token, maxChars = 60000}) {
       const chunks=[]; let size=0;
       for await (const chunk of req) {size+=chunk.length; if(size>1024*1024) throw new GatewayError('Request too large.',413); chunks.push(chunk);}
       let body; try {body=JSON.parse(Buffer.concat(chunks));} catch {throw new GatewayError('Invalid JSON.');}
-      const request = prepare(body,maxChars);
+      const request = prepare(body,maxChars,snapshotContext);
       if (!backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       res.on('close', () => {if(!res.writableEnded) controller.abort();});
@@ -70,7 +70,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const token=await getToken();
   const port=Number(process.env.WA_PORT??8787);
   const backend=new WhatsApp({root,stateDir});
-  const server=createGateway({backend,token});
+  const snapshotContext = process.env.WA_SNAPSHOT_CONTEXT === '1';
+  const server=createGateway({backend,token,snapshotContext});
   server.requestTimeout=150000;
   server.on('error',async e=>{console.error(e.message);await backend.close();process.exit(1);});
   server.listen(port,'127.0.0.1',()=>console.error(`whatsapp-code listening on http://127.0.0.1:${port}`));

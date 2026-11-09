@@ -4,7 +4,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Twenty-four local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
+**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Twenty-five local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
@@ -59,6 +59,7 @@ The device database, gateway token, and pairing page stay in local application s
 | WA_PORT | 8787 | Loopback port; set on server and launcher |
 | WA_STATE_DIR | local application storage | Private runtime directory; set on server and launcher |
 | WA_BOT_JID | discovered | Explicit known Meta AI address; set on server |
+| WA_SNAPSHOT_CONTEXT | off | Set to 1 on the server to try single-file snapshot context |
 | GO_BINARY | go | Compiler for npm run build |
 
 Supported explicit bot addresses are defined by whatsmeow: 1807055946647697@bot (Muse), 867051314767696@bot (Meta AI), and 13135550002@s.whatsapp.net (legacy). An override does not establish account eligibility.
@@ -87,6 +88,8 @@ Existing checkouts from the initial version used .state/. Stop the gateway and m
 
 Select a prompt with --harness-prompt compact, --harness-prompt coding, or --harness-prompt native. Compact is the initial bootstrap prompt; coding supplies fuller project-inspection, edit, test, and permission guidance; native uses Claude Code's own default prompt. All three receive project context and the WhatsApp JSON protocol. Native may exceed the gateway context limit.
 
+For a single-file task, start the gateway with `WA_SNAPSHOT_CONTEXT=1 npm start` to try sending less context. Each primary WhatsApp prompt includes the latest task, at most one current numbered Read snapshot, the latest test failure, and the status of the most recent tools. Claude Code keeps the full transcript and still handles tools and permissions. A shell command or edit invalidates the snapshot, so a fresh Read may be needed. This mode omits other tool output and is intended for experiments on bounded tasks.
+
 The live development exercises run with:
 
     python3 scripts/eval_coding.py --prompts compact coding native
@@ -100,3 +103,5 @@ With EditLines, the compact prompt applied two cache changes successfully. The d
 The short EDIT header and test recovery guard produced one pair that passed the original fixture checks. A separate review found that its CSV patch missed a standalone quoted empty field. In the final rerun, cache passed in 35.1 seconds with one translated edit and a successful test run. CSV failed in 34.6 seconds when a reply could not be decoded, before any edit applied. Explicit indentation remains available in the repair format. The fixture runs still show variable live reliability.
 
 The CSV fixture now requires a standalone quoted empty field in the visible tests and two such rows in the held-out tests. The decoder recovered the captured EDIT frames with literal newlines and quotes inside malformed JSON. In the expanded live run, three edits applied, then the model sent a stale request ID. It did not pass both the quoted-empty and final-newline tests on the same patch. A separate retry with a row-state hint also failed.
+
+In the first live snapshot-mode CSV run, all visible tests passed, including the standalone quoted empty field. The held-out suite failed because the patch dropped a delimiter-only row. A retry with explicit fence-free edits and better syntax-error feedback ended on an undecodable reply before editing. Neither run met the full pass criteria.
