@@ -34,7 +34,7 @@ export class WhatsApp {
   async event(e) {
     if (e.event === 'pairing') {
       if (e.status === 'code') {
-        this.status = 'scan QR in .state/pairing.html';
+        this.status = 'scan QR in ' + path.join(this.stateDir, 'pairing.html');
         const image = await QRCode.toDataURL(e.code, {width: 360, margin: 3});
         await this.pairingPage(`<h1>Link WhatsApp</h1><p>On your phone: WhatsApp → Settings → Linked devices → Link a device.</p><img src="${image}" alt="WhatsApp pairing QR"><p>This links the local whatsapp-code client to your account. The app processes only Meta AI replies, though a linked device has account-level access. Keep this page private.</p>`);
         console.error(`Pairing QR ready: ${path.join(this.stateDir,'pairing.html')}`);

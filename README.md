@@ -18,7 +18,7 @@ Requires Node 22+, Go 1.26+, a C compiler (for SQLite), Claude Code on PATH, and
     npm run build
     npm start
 
-Open .state/pairing.html in a browser. On your phone, open **WhatsApp → Settings → Linked devices → Link a device**, then scan the QR. The page refreshes as QR codes rotate. If pairing expires, restart the gateway and reload the page. Wait for the terminal to report WhatsApp ready.
+Open the pairing.html path printed by the gateway in a browser. On your phone, open **WhatsApp → Settings → Linked devices → Link a device**, then scan the QR. The page refreshes as QR codes rotate. If pairing expires, restart the gateway and reload the page. Wait for the terminal to report WhatsApp ready.
 
 Keep the gateway running. From the project you want to work on:
 
@@ -36,7 +36,7 @@ The launcher uses a compact coding prompt and Read, Write, Edit, Glob, Grep, and
 
 WhatsApp grants a paired device account-level access. This implementation disables history downloads and ignores messages except replies from the selected Meta AI bot. That filter does not narrow the underlying credential's permissions.
 
-The device database, gateway token, and pairing page stay in .state/, with restrictive filesystem permissions and Git exclusions. Never share that directory. Revoke the linked device from your phone when finished. The gateway listens on 127.0.0.1, requires its local token, and rejects browser-origin API requests. Do not expose it publicly.
+The device database, gateway token, and pairing page stay in local application storage, outside the checkout: ~/Library/Application Support/whatsapp-code on macOS, or $XDG_STATE_HOME/whatsapp-code (default ~/.local/state/whatsapp-code) on Linux, with restrictive filesystem permissions. Never share that directory. Revoke the linked device from your phone when finished. The gateway listens on 127.0.0.1, requires its local token, and rejects browser-origin API requests. Do not expose it publicly.
 
 ## Limits
 
@@ -57,7 +57,7 @@ The device database, gateway token, and pairing page stay in .state/, with restr
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | WA_PORT | 8787 | Loopback port; set on server and launcher |
-| WA_STATE_DIR | repository .state/ | Private runtime directory; set on server and launcher |
+| WA_STATE_DIR | local application storage | Private runtime directory; set on server and launcher |
 | WA_BOT_JID | discovered | Explicit known Meta AI address; set on server |
 | GO_BINARY | go | Compiler for npm run build |
 
@@ -80,3 +80,5 @@ Dependencies are pinned in package-lock.json and transport/go.sum. Original code
 - [Claude Code gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect)
 - [whatsmeow API](https://pkg.go.dev/go.mau.fi/whatsmeow)
 - [Meta AI on WhatsApp](https://ai.meta.com/learn/ai-basics/how-to-use-meta-ai-on-whatsapp/)
+
+Existing checkouts from the initial version used .state/. Stop the gateway and move that directory to the platform storage location above, or set WA_STATE_DIR to its absolute path on both server and launcher. Keep credentials outside synced project folders.

@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { homedir } from 'node:os';
 import { GatewayError, prepare, streamMessage } from './protocol.mjs';
 
 export function createGateway({backend, token, maxChars = 60000}) {
@@ -50,7 +51,10 @@ export function createGateway({backend, token, maxChars = 60000}) {
 }
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-export const stateDir = path.resolve(process.env.WA_STATE_DIR ?? path.join(root,'.state'));
+const localState = process.platform === 'darwin'
+  ? path.join(homedir(), 'Library', 'Application Support', 'whatsapp-code')
+  : path.join(process.env.XDG_STATE_HOME ?? path.join(homedir(), '.local', 'state'), 'whatsapp-code');
+export const stateDir = path.resolve(process.env.WA_STATE_DIR ?? localState);
 export async function getToken() {
   await mkdir(stateDir,{recursive:true,mode:0o700}); await chmod(stateDir,0o700);
   const file=path.join(stateDir,'gateway-token');
