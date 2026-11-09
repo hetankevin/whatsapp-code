@@ -90,3 +90,50 @@ test('literal Write and Edit source survives quotes, slashes, indentation, and t
   assert.throws(() => parseReply(write.replace('\n<<<END>>>',''),request), /complete protocol/);
   assert.throws(() => parseReply(write.replace(header('Write'),header('Write',request.requestId,{file_path:5})),request), /invalid arguments/);
 });
+
+function lineEditRequest(extra = [], result = {type:'tool_result',tool_use_id:'read-x',content:'7\tconst a = 1;\n8\t  return "old";\n9\t}'}) {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name,input_schema:{type:'object'}}));
+  const messages = [
+    {role:'assistant',content:[{type:'tool_use',name:'Read',id:'read-x',input:{file_path:'module.js',offset:7}}]},
+    {role:'user',content:[result]},
+    ...extra
+  ];
+  return prepare({tools,messages});
+}
+
+test('EditLines uses exact source and preserves lines outside the range', () => {
+  const request = lineEditRequest();
+  const payload = JSON.parse(request.prompt.split('CURRENT REQUEST:\n')[1]);
+  assert.deepEqual(payload.editable_reads, [{read_id:'read-x',file_path:'module.js',start_line:7,end_line:9}]);
+  assert.ok(payload.tools.some(tool => tool.name === 'EditLines'));
+  assert.ok(!payload.tools.some(tool => tool.name === 'Edit'));
+  const header = JSON.stringify({request_id:request.requestId, content:[
+    {type:'tool_use',name:'EditLines',input:{read_id:'read-x',start_line:8,end_line:8}}
+  ]});
+  const [edit] = parseReply(header+'\n<<<NEW>>>\n  return "\\\\n";\n<<<END>>>',request).content;
+  assert.match(edit.id, /^toolu_lines_/);
+  assert.equal(edit.name, 'Edit');
+  assert.deepEqual(edit.input, {
+    file_path:'module.js',
+    old_string:'const a = 1;\n  return "old";\n}',
+    new_string:'const a = 1;\n  return "\\\\n";\n}'
+  });
+});
+
+test('range edits reject unobserved lines, stale snapshots, and parallel calls', () => {
+  const call = (input = {}) => ({type:'tool_use',name:'EditLines',input:{
+    read_id:'read-x',start_line:8,end_line:8,new_string:'',...input
+  }});
+  const reply = (request, ...content) => JSON.stringify({request_id:request.requestId,content});
+  const request = lineEditRequest();
+  assert.throws(() => parseReply(reply(request,call({start_line:6})),request), /outside/);
+  assert.throws(() => parseReply(reply(request,call({end_line:10})),request), /outside/);
+  assert.throws(() => parseReply(reply(request,call(),call()),request), /without other tools/);
+  assert.equal(parseReply(reply(request,call()),request).content[0].input.new_string, 'const a = 1;\n}');
+  const stale = lineEditRequest([{role:'assistant',content:[
+    {type:'tool_use',name:'Bash',id:'cmd',input:{command:'node --test'}}
+  ]}]);
+  assert.throws(() => parseReply(reply(stale,call()),stale), /current Read snapshot/);
+  const unnumbered = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:'unnumbered'});
+  assert.throws(() => parseReply(reply(unnumbered,call()),unnumbered), /current Read snapshot/);
+});

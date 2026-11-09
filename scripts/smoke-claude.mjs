@@ -39,7 +39,10 @@ const server = createGateway({
       assert.ok(last && !last.is_error, 'Claude Code must successfully execute each tool');
       if (results.length === 1) {
         assert.ok(JSON.stringify(last.content).includes(secret), 'Read must return the actual fixture content');
-        const frame = tool('Edit', {file_path: target}) + '\n<<<OLD>>>\n' + original + '\n<<<NEW>>>\n' + source + '\n<<<END>>>';
+        const read = payload.editable_reads.find(read => read.read_id === last.tool_use_id);
+        assert.ok(read, 'Claude Code must return a numbered Read snapshot');
+        const frame = tool('EditLines', {read_id:read.read_id, start_line:1, end_line:1}) +
+          '\n<<<NEW>>>\n' + source.slice(0, -1) + '\n<<<END>>>';
         return parseReply(frame, request);
       }
       if (results.length === 2) {
@@ -76,7 +79,7 @@ try {
   assert.equal(code, 0, stderr + '\n' + stdout);
   assert.ok(rounds >= 4);
   assert.ok(stdout.includes(expected));
-  console.log('PASS: Claude Code read a file, edited literal source, ran it, and returned the actual output.');
+  console.log('PASS: Claude Code read a file, applied a line-range edit, ran it, and returned the actual output.');
 } finally {
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

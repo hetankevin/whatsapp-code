@@ -178,6 +178,8 @@ def exercise(name, mode, timeout, output, tools):
             "instructions_kept": instructions_kept, "implementation_only": implementation_only,
             "read_instructions": read_instructions,
             "passed_tests_after_edit": tested, "tool_calls": [c["name"] for c in calls.values()],
+            "line_edits": sum(call_id.startswith("toolu_lines_") for call_id in calls),
+            "successful_line_edits": sum(call["id"].startswith("toolu_lines_") for _, call in successful_results),
             "max_estimated_input_tokens": max(usage, default=0),
             "passed": code == 0 and not api_error and checked["visible"] and checked["held_out"] and implementation_only and instructions_kept and tested,
             "stderr_tail": stderr[-1800:], "api_error": api_error,

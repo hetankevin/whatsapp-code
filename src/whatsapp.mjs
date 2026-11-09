@@ -93,7 +93,13 @@ export class WhatsApp {
       frames.push('For Edit, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then lines <<<OLD>>>, exact old source, <<<NEW>>>, literal replacement, and <<<END>>>. Omit input.old_string and input.new_string from the header.');
     }
     const repair = [
-      'Your previous reply could not be decoded. Repair its format and preserve the intended content and tool arguments.',
+      'Your previous reply was rejected: ' + error.message,
+      'Repair the reply for the same task. Preserve the intended change.',
+      ...(p.request.rangeGuide ? [
+        p.request.rangeGuide,
+        'Current editable_reads: ' + JSON.stringify(p.request.editableReads),
+        'If the needed read is missing, return a Read call for that file.'
+      ] : []),
       'Return a valid JSON object with request_id ' + JSON.stringify(p.request.requestId) + ' and content as an array of text/tool_use blocks.',
       'Escape newlines and quotes inside JSON strings. Use no Markdown wrappers or surrounding prose.',
       ...frames,
@@ -104,7 +110,7 @@ export class WhatsApp {
     p.repairCount = (p.repairCount ?? 0) + 1;
     p.id = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
     p.messageIds.clear();
-    console.error('Meta AI returned malformed JSON; requesting one formatting repair.');
+    console.error('Meta AI reply rejected; requesting one repair. ' + error.message);
     this.child.stdin.write(JSON.stringify({id:p.id,prompt:repair})+'\n', err => {if(err) p.reject(err);});
   }
   async complete(request, signal) {

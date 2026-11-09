@@ -4,7 +4,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Seventeen local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
+**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Nineteen local tests and a separate fake-model integration test also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
@@ -44,7 +44,7 @@ The device database, gateway token, and pairing page stay in local application s
 - Full supplied context is resent, up to a 60,000-character limit. Oversized requests fail rather than silently truncating code.
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.
-- Tool replies use JSON. A formatting repair can use a JSON header followed by literal source for Write or Edit when the client supplies that tool. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
+- For coding requests with Read and Edit, Meta AI sees EditLines. It supplies a recent read ID, an inclusive line range, and literal replacement source. The gateway builds the exact match from the Read result and sends a regular Edit to Claude Code. A fresh Read is required after a file mutation or shell command. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
 - Replies are buffered, then emitted as Anthropic SSE events. This is not native token streaming.
 - Token counts are character-based estimates, not tokenizer or billing data.
 - No model-version pinning, sampling controls, or enforceable output-token limit.
@@ -70,7 +70,7 @@ The live test used 867051314767696@bot. The legacy phone address failed, and Mus
     npm test
     npm run test:claude
 
-The second command runs Claude Code in a temporary directory against a local fake model. It reads a fixture, edits it through the literal-source format, runs it, and verifies the output. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
+The second command runs Claude Code in a temporary directory against a local fake model. It reads a fixture, applies a line-range edit, runs it, and verifies the output. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
 
 Dependencies are pinned in package-lock.json and transport/go.sum. Original code is MIT licensed; dependencies retain their licenses.
 
@@ -91,6 +91,6 @@ The live development exercises run with:
 
     python3 scripts/eval_coding.py --prompts compact coding native
 
-This sends prompts and disposable example code through your paired WhatsApp account. It tests a TTL cache fix and CSV parsing against visible and held-out checks. A pass requires changes confined to the implementation file and a successful test command after the last edit. Results and traces stay under ignored .work/coding-evals. These are small development exercises, not a general coding benchmark.
+This sends prompts and disposable example code through your paired WhatsApp account. It tests a TTL cache fix and CSV parsing against visible and held-out checks. A pass requires changes confined to the implementation file and a successful test command after the last edit. The runner records how many translated line edits Claude Code executed successfully. Results and traces stay under ignored .work/coding-evals. These are small development exercises, not a general coding benchmark.
 
 The first three-prompt comparison completed one of six runs. Compact passed the cache task, and all three prompts failed CSV. Follow-up runs on the two tasks also failed. The observed problems include malformed tool replies, edits that differ from the file's exact whitespace, and ending a turn after a failed test. The compact prompt remains the default. These runs are too small to rank the prompts reliably.
