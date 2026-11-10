@@ -418,7 +418,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       messages
     })
   };
-  let prompt = `You are the model in a local coding harness. Answer the latest user message in the supplied conversation. Use earlier messages only as context. Answer simple checks and greetings directly without tools. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
+  let prompt = `You are the model in a local coding harness. Answer the latest user message in the supplied conversation. Use earlier messages only as context. Answer simple checks and greetings directly without tools. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nFor a final answer, return plain text or a JSON text block. For tool calls, return one JSON object with no surrounding prose. A text block looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
   const rangeGuide = rangeEnabled ? [
     'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
     'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement lines between the header and footer. ' +
@@ -432,7 +432,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   ].join('\n') : '';
   const system = content(body.system ?? '');
   const systemText = typeof system === 'string' ? system : system.map(b => b.text ?? '').join('\n');
-  if (rangeGuide) prompt = prompt.replace('Return one JSON object.', 'Return JSON for ordinary replies. Use the literal source format for EditLines.').replace(
+  if (rangeGuide) prompt = prompt.replace('For tool calls, return one JSON object with no surrounding prose.', 'For tool calls, return one JSON object with no surrounding prose. Use the literal source format for EditLines.').replace(
     '\nCURRENT REQUEST:', () => '\n\n' + rangeGuide + '\n\nCURRENT REQUEST:'
   );
   if (useSnapshot) {
@@ -469,6 +469,8 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
 
 export function parseReply(raw, request, {matchedTurn = false} = {}) {
   const trimmed = raw.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '').trim();
+  // Consumer WhatsApp supplies no tokenizer counts. These are estimates, not billing data.
+  const usage = {input_tokens: Math.ceil(request.prompt.length / 4), output_tokens: Math.ceil(raw.length / 4)};
   let obj;
   try {
     try { obj = JSON.parse(trimmed); }
@@ -484,9 +486,13 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
       }
     }
   } catch {
-    const error = new GatewayError('Meta AI did not return complete protocol JSON or a code frame.', 502);
-    error.repairable = true;
-    throw error;
+    // A plain answer can only finish a turn. It can never request a tool or
+    // bypass validation for a reply that looks like the tool protocol.
+    const looksStructured = /^(?:\{|\[|(?:EDIT|REPLACE|FILE|END)[ \t]|<<<)|"(?:request_id|tool_use)"|"content"\s*:/.test(trimmed);
+    if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && trimmed && !looksStructured) {
+      return assistantMessage(request.model, [{type: 'text', text: raw.trim()}], usage);
+    }
+    throw repairableError('Meta AI did not return complete protocol JSON or a code frame.');
   }
   // The bot may omit the application ID only after WhatsApp has matched the
   // reply to the pending outbound message. An explicit stale ID always fails.
@@ -530,10 +536,7 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
   if (['any', 'tool'].includes(request.choice.type) && !calls.length) throw new GatewayError('Meta AI omitted a required tool.', 502);
   if (request.choice.type === 'tool' && calls.some(b => b.name !== request.choice.name)) throw new GatewayError('Meta AI selected the wrong required tool.', 502);
   if (request.choice.disable_parallel_tool_use && calls.length > 1) throw new GatewayError('Meta AI requested parallel tools when disabled.', 502);
-  // Consumer WhatsApp supplies no tokenizer counts. These are estimates, not billing data.
-  return assistantMessage(request.model, blocks, {
-    input_tokens: Math.ceil(request.prompt.length / 4), output_tokens: Math.ceil(raw.length / 4)
-  });
+  return assistantMessage(request.model, blocks, usage);
 }
 
 export function streamMessage(message, send) {

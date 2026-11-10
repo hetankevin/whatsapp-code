@@ -42,9 +42,34 @@ test('one format repair can recover a reply; old message targets cannot complete
 });
 test('format repair is bounded', async () => {
   const f=transportFixture();
-  await f.w.event({event:'message',id:'bad',target:'original',edit:'full',message:{conversation:'not json'}});
-  await f.w.event({event:'message',id:'stillbad',target:f.writes[0].id,edit:'full',message:{conversation:'still not json'}});
+  await f.w.event({event:'message',id:'bad',target:'original',edit:'full',message:{conversation:'{not json'}});
+  await f.w.event({event:'message',id:'stillbad',target:f.writes[0].id,edit:'full',message:{conversation:'{still not json'}});
   assert.equal(f.writes.length,1);assert.match(f.rejected.message,/JSON/);
+});
+
+test('a matched final WhatsApp answer can be ordinary text', async () => {
+  const f = transportFixture();
+  const answer = 'A faster bound uses preprocessing.\n\nThe details depend on the computation model.';
+  const event = (id, target, edit, text, edit_target) => ({
+    event:'message', id, target, edit, edit_target, message:{extendedTextMessage:{text}}
+  });
+  await f.w.event(event('late', 'old-turn', 'full', answer));
+  await f.w.event(event('partial', 'original', 'first', 'A faster bound'));
+  assert.equal(f.resolved, undefined);
+  await f.w.event(event('final', undefined, 'last', answer, 'partial'));
+  assert.deepEqual(f.resolved.content, [{type:'text',text:answer}]);
+  assert.equal(f.resolved.stop_reason, 'end_turn');
+  assert.equal(f.writes.length, 0);
+
+  const body = {messages:[{role:'user',content:'Question'}]};
+  for (const choice of ['auto', 'none']) {
+    const request = prepare({...body,tool_choice:{type:choice}});
+    assert.throws(() => parseReply(answer, request), /protocol JSON/);
+    assert.throws(() => parseReply('Here is the tool: {"type":"tool_use"', request, {matchedTurn:true}), /protocol JSON/);
+  }
+  const required = prepare({...body,tool_choice:{type:'any'}});
+  assert.throws(() => parseReply(answer, required, {matchedTurn:true}), /protocol JSON/);
+  assert.throws(() => parseReply(answer, {...f.request,editFiles:['/fixture.js']}, {matchedTurn:true}), /protocol JSON/);
 });
 
 test('a matched reply without an answer gets one repair', async () => {

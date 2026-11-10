@@ -2,7 +2,7 @@
 
 An experimental adapter that uses WhatsApp's consumer Meta AI as the model behind Claude Code.
 
-Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, validates Meta AI's JSON reply, and returns text or tool calls. Claude Code executes tools under its own permission rules.
+Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, returns Meta AI's text answers or validates its structured tool calls. Claude Code executes tools under its own permission rules.
 
 **Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Twenty-six local tests and four Claude Code smoke tests also pass. This is a small integration check, not evidence of reliable long coding sessions.
 
