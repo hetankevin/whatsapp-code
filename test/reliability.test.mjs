@@ -21,9 +21,9 @@ test('project context identifies the real directory and loads only instruction c
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-function transportFixture() {
+function transportFixture(tools = []) {
   const w = Object.create(WhatsApp.prototype);
-  const request = prepare({system:'Use this project.', messages:[{role:'user',content:'hello'}]});
+  const request = prepare({tools, system:'Use this project.', messages:[{role:'user',content:'hello'}]});
   const writes=[];let resolved, rejected;
   w.child = {stdin:{write:line=>writes.push(JSON.parse(line))}};
   w.pending = {id:'original',request,messageIds:new Set(),repairCount:0,
@@ -40,14 +40,42 @@ test('one format repair can recover a reply; old message targets cannot complete
   await f.w.event({event:'message',id:'fixed',target:f.writes[0].id,edit:'full',message:{conversation:valid}});
   assert.equal(f.resolved.content[0].text,'hello');
 });
-test('repair is bounded and never repairs a valid JSON reply for the wrong request', async () => {
+test('format repair is bounded', async () => {
   const f=transportFixture();
   await f.w.event({event:'message',id:'bad',target:'original',edit:'full',message:{conversation:'not json'}});
   await f.w.event({event:'message',id:'stillbad',target:f.writes[0].id,edit:'full',message:{conversation:'still not json'}});
   assert.equal(f.writes.length,1);assert.match(f.rejected.message,/JSON/);
-  const other=transportFixture();
-  await other.w.event({event:'message',id:'wrong',target:'original',edit:'full',message:{conversation:JSON.stringify({request_id:'wrong',content:[{type:'text',text:'x'}]})}});
-  assert.equal(other.writes.length,0);assert.match(other.rejected.message,/match/);
+});
+
+test('stale IDs get one fresh prompt and ID-free calls still require a matched WhatsApp turn', async () => {
+  const f = transportFixture([{name: 'Grep', input_schema: {
+    type: 'object', properties: {pattern: {type: 'string'}}, required: ['pattern']
+  }}]);
+  const old = JSON.stringify({request_id: 'old', content: [{type: 'text', text: 'STALE PAYLOAD'}]});
+  const fresh = JSON.stringify({content: [{type: 'tool_use', name: 'Grep', input: {pattern: 'SessionCache'}}]});
+  const event = (id, target, conversation) => f.w.event({event: 'message', id, target, edit: 'full', message: {conversation}});
+
+  assert.throws(() => parseReply(fresh, f.request), /does not match/);
+  await event('old-turn', 'unrelated', fresh);
+  assert.equal(f.resolved, undefined);
+  assert.equal(f.writes.length, 0);
+  await event('stale', 'original', old);
+  assert.equal(f.resolved, undefined);
+  assert.equal(f.writes.length, 1);
+  assert.ok(f.writes[0].prompt.endsWith(f.request.prompt));
+  assert.doesNotMatch(f.writes[0].prompt, /STALE PAYLOAD/);
+  await event('late', 'original', fresh);
+  assert.equal(f.resolved, undefined);
+  await event('fresh', f.writes[0].id, fresh);
+  assert.equal(f.resolved.content[0].name, 'Grep');
+  assert.deepEqual(f.resolved.content[0].input, {pattern: 'SessionCache'});
+
+  const repeated = transportFixture();
+  const reply = target => repeated.w.event({event: 'message', id: target + '-reply', target, edit: 'full', message: {conversation: old}});
+  await reply('original');
+  await reply(repeated.writes[0].id);
+  assert.equal(repeated.writes.length, 1);
+  assert.match(repeated.rejected.message, /does not match/);
 });
 
 test('only numbered Read results lose their display prefixes', () => {

@@ -92,6 +92,12 @@ function repairableError(message) {
   return error;
 }
 
+function staleRequestError(message) {
+  const error = repairableError(message);
+  error.staleRequest = true;
+  return error;
+}
+
 function resolveLineEdit(input, request) {
   if (!request.validateLineEdit?.(input)) throw repairableError('EditLines needs a read_id, two line numbers, and replacement source.');
   const {read_id, start_line, end_line} = input;
@@ -103,7 +109,7 @@ function resolveLineEdit(input, request) {
     let decoded;
     try { decoded = parseLineFrame(embedded, true); }
     catch { throw repairableError('Send one complete EDIT frame, outside the replacement source.'); }
-    if (decoded.request_id !== request.requestId) throw repairableError('Nested EDIT uses a stale request ID. Send one EDIT frame for this request.');
+    if (decoded.request_id !== request.requestId) throw staleRequestError('Nested EDIT uses a stale request ID. Send one EDIT frame for this request.');
     const nested = decoded.content[0].input;
     if (nested.read_id !== read_id || nested.start_line !== start_line || nested.end_line !== end_line) {
       throw repairableError('Nested EDIT metadata disagrees with the requested range. Send one EDIT frame.');
@@ -375,7 +381,6 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     .map((line, index) => (snapshot.first + index) + '\t' + line).join('\n');
   const [currentRead] = snapshots.values();
   const payload = {
-    request_id: requestId,
     tools: modelTools.map(({name, description, input_schema}) => ({name, description, input_schema})),
     tool_choice: choice,
     editable_reads: rangeEnabled ? editableReads : undefined,
@@ -389,7 +394,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       messages
     })
   };
-  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"request_id":"${requestId}","content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
+  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
   const rangeGuide = rangeEnabled ? [
     'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
     'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement lines between the header and footer. ' +
@@ -438,7 +443,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditTool.input_schema) : null, model, editFiles};
 }
 
-export function parseReply(raw, request) {
+export function parseReply(raw, request, {matchedTurn = false} = {}) {
   const trimmed = raw.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '').trim();
   let obj;
   try {
@@ -459,11 +464,13 @@ export function parseReply(raw, request) {
     error.repairable = true;
     throw error;
   }
-  if (obj?.request_id !== request.requestId) {
-    const message = 'Meta AI reply does not match this request.';
-    throw request.editFiles ? repairableError(message) : new GatewayError(message, 502);
+  // The bot may omit the application ID only after WhatsApp has matched the
+  // reply to the pending outbound message. An explicit stale ID always fails.
+  const explicitId = obj && Object.hasOwn(obj, 'request_id');
+  if (explicitId ? obj.request_id !== request.requestId : !matchedTurn) {
+    throw staleRequestError('Meta AI reply does not match this request.');
   }
-  if (!Array.isArray(obj.content) || !obj.content.length) throw new GatewayError('Meta AI returned no content.', 502);
+  if (!Array.isArray(obj?.content) || !obj.content.length) throw new GatewayError('Meta AI returned no content.', 502);
   if (request.editFiles && (obj.content.length !== 1 ||
       obj.content[0]?.type !== 'tool_use' || obj.content[0].name !== 'EditLines')) {
     throw repairableError('Propose one line edit. The harness handles all other actions.');

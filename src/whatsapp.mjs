@@ -66,7 +66,7 @@ export class WhatsApp {
     if (!text) return;
     p.lastError = null;
     let reply;
-    try { reply = parseReply(text, p.request); }
+    try { reply = parseReply(text, p.request, {matchedTurn: true}); }
     catch (err) { p.lastError = err; }
     // Some bot protocols send edited full snapshots; wait for final/full, or a quiet
     // complete JSON snapshot. Incomplete chunks never become executable tool calls.
@@ -92,7 +92,9 @@ export class WhatsApp {
     if (p.request.validators.has('Edit') && !p.request.rangeGuide) {
       frames.push('For Edit, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then lines <<<OLD>>>, exact old source, <<<NEW>>>, literal replacement, and <<<END>>>. Omit input.old_string and input.new_string from the header.');
     }
-    const repair = p.request.editFiles
+    const repair = error.staleRequest
+      ? 'The previous reply used an old request ID. Answer the current request below. For JSON replies, omit request_id.\n\n' + p.request.prompt
+      : p.request.editFiles
       ? 'Your previous edit was rejected: ' + error.message + '\n\n' + p.request.prompt
       : [
       'Your previous reply was rejected: ' + error.message,
@@ -104,7 +106,7 @@ export class WhatsApp {
         'If the needed read is missing, return a Read call for that file.',
         'For a source reply, keep the EDIT header and footer outside the replacement. If indentation needs encoding, add INDENT after the end line in the EDIT header. Prefix each source line with the space count and | (for example, 4|return value;). Use 0| for blank lines or s and t for explicit spaces and tabs.'
       ] : []),
-      'Use request ID ' + JSON.stringify(p.request.requestId) + '. For JSON replies, use a content array of text or tool_use blocks.',
+      'For JSON replies, omit request_id and use a content array of text or tool_use blocks. If using a legacy source frame with an ID, use ' + JSON.stringify(p.request.requestId) + '.',
       p.request.rangeGuide
         ? 'Use JSON for ordinary replies and the EDIT format for a line edit. Use no surrounding prose.'
         : 'Escape newlines and quotes inside JSON strings. Use no Markdown wrappers or surrounding prose.',
