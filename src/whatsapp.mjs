@@ -87,7 +87,7 @@ export class WhatsApp {
     const error = p.lastError;
     if (!error?.repairable || p.repairCount >= 1) return p.reject(error);
     const frames = [];
-    if (p.request.validators.has('Write')) {
+    if (!p.request.rangeGuide && p.request.validators.has('Write')) {
       frames.push('For Write, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then separate lines <<<FILE>>>, literal content, and <<<END>>>. Omit input.content from the header.');
     }
     if (p.request.validators.has('Edit') && !p.request.rangeGuide) {
@@ -105,7 +105,8 @@ export class WhatsApp {
         'Choose an ID and range from editable_reads in the request below. If the needed read is missing, call Read.',
         'To preserve indentation, add INDENT to the EDIT header. Prefix each replacement line with its space count and |, including 0| for blank lines.'
       ] : []),
-      'For JSON replies, omit request_id and use a content array of text or tool_use blocks. If using a legacy source frame with an ID, use ' + JSON.stringify(p.request.requestId) + '.',
+      'For JSON replies, omit request_id and use a content array of text or tool_use blocks.',
+      ...(frames.length ? ['For a source frame with an ID, use ' + JSON.stringify(p.request.requestId) + '.'] : []),
       ...frames,
       '',
       p.request.prompt

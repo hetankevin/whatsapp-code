@@ -70,20 +70,16 @@ function trackReads(messages) {
   return snapshots;
 }
 
-const lineEditTool = {
-  name: 'EditLines',
-  description: 'Replace an inclusive range of lines in a recent Read snapshot. Use editable_reads to select the read ID and range. Reread after an edit or a shell command.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      read_id: {type: 'string'},
-      start_line: {type: 'integer', minimum: 1},
-      end_line: {type: 'integer', minimum: 1},
-      new_string: {type: 'string'}
-    },
-    required: ['read_id', 'start_line', 'end_line', 'new_string'],
-    additionalProperties: false
-  }
+const lineEditInputSchema = {
+  type: 'object',
+  properties: {
+    read_id: {type: 'string'},
+    start_line: {type: 'integer', minimum: 1},
+    end_line: {type: 'integer', minimum: 1},
+    new_string: {type: 'string'}
+  },
+  required: ['read_id', 'start_line', 'end_line', 'new_string'],
+  additionalProperties: false
 };
 
 function repairableError(message) {
@@ -131,12 +127,39 @@ function resolveLineEdit(input, request) {
   return {file_path: filePath, old_string: lines.join('\n'), new_string: updated.join('\n')};
 }
 
+// Claude Code keeps the exact Edit arguments. WhatsApp only needs the
+// changed lines, since the original Read is already in its transcript.
+function changedLines(before, after) {
+  const oldLines = before.split('\n');
+  const newLines = after.split('\n');
+  let start = 0;
+  let oldEnd = oldLines.length;
+  let newEnd = newLines.length;
+  while (start < Math.min(oldEnd, newEnd) && oldLines[start] === newLines[start]) start++;
+  while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd--;
+    newEnd--;
+  }
+  return {
+    before: oldLines.slice(start, oldEnd).join('\n'),
+    after: newLines.slice(start, newEnd).join('\n')
+  };
+}
+
 function content(blocks, readIds, snapshots) {
   if (typeof blocks === 'string') return blocks;
   if (!Array.isArray(blocks)) throw new GatewayError('Expected text or content blocks.');
   return blocks.map(b => {
     if (b.type === 'text') return { type: 'text', text: b.text };
-    if (b.type === 'tool_use') return { type: b.type, id: b.id, name: b.name, input: b.input };
+    if (b.type === 'tool_use') {
+      const call = {type: b.type, id: b.id, name: b.name, input: b.input};
+      const {file_path, old_string, new_string} = b.input ?? {};
+      if (b.name === 'Edit' && b.id?.startsWith('toolu_lines_') &&
+          typeof old_string === 'string' && typeof new_string === 'string') {
+        return {...call, input: {file_path}, changed_lines: changedLines(old_string, new_string)};
+      }
+      return call;
+    }
     if (b.type === 'tool_result') {
       let result = content(b.content ?? '');
       if (!b.is_error && readIds?.has(b.tool_use_id) && !snapshots?.has(b.tool_use_id)) {
@@ -420,7 +443,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     readHandles.set(read_id, id);
     return {read_id, file_path:filePath, start_line:first, end_line:first + lines.length - 1};
   });
-  const modelTools = rangeEnabled ? tools.map(tool => tool.name === 'Edit' ? lineEditTool : tool) : tools;
+  const modelTools = rangeEnabled ? tools.filter(tool => tool.name !== 'Edit') : tools;
   const {failures, latestFailure} = testState(taskMessages);
   const testFailures = choice.type === 'auto' ? failures : new Map();
   const readIds = new Set();
@@ -470,19 +493,20 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   };
   let prompt = `You are the model in a local coding harness. Answer current_request when present. Use the rest of the supplied conversation as context and tool evidence for that request. Answer simple checks and greetings directly without tools. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nFor a final answer, return plain text or a JSON text block. For tool calls, return one JSON object with no surrounding prose. A text block looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
   const rangeGuide = rangeEnabled ? [
-    'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
-    'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement for the selected range between the header and footer. Leave surrounding lines outside that range. ' +
+    'To edit a file, send the standalone EDIT frame below. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
+    'Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement for the selected range between the header and footer. Leave surrounding lines outside that range. ' +
       (useSnapshot
       ? 'Send bare code between the markers. Omit Markdown fences. To encode indentation, append INDENT to the EDIT header and prefix every line with its space count and | (for example 2|return value;).'
       : 'A fenced code block around the replacement is encouraged to preserve indentation.') +
       ' To delete the selected lines, leave one empty line between the header and footer.',
     'EDIT READ_ID START END_LINE',
     'literal replacement code',
-    'END'
+    'END',
+    'In the transcript, changed_lines on a prior Edit shows only the changed source, and the linked tool result records whether it ran.'
   ].join('\n') : '';
   const system = content(body.system ?? '');
   const systemText = typeof system === 'string' ? system : system.map(b => b.text ?? '').join('\n');
-  if (rangeGuide) prompt = prompt.replace('For tool calls, return one JSON object with no surrounding prose.', 'For tool calls, return one JSON object with no surrounding prose. Use the literal source format for EditLines.').replace(
+  if (rangeGuide) prompt = prompt.replace('For tool calls, return one JSON object with no surrounding prose.', 'Use one JSON object for the tools listed in tools. To edit a file, use the standalone EDIT frame shown below, outside JSON.').replace(
     '\nCURRENT REQUEST:', () => '\n\n' + rangeGuide + '\n\nCURRENT REQUEST:'
   );
   if (useSnapshot) {
@@ -514,7 +538,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, rangeGuide: editGuide, testFailures,
-    validateLineEdit: rangeEnabled ? ajv.compile(lineEditTool.input_schema) : null, model, editFiles, maxChars};
+    validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars};
 }
 
 export function parseReply(raw, request, {matchedTurn = false} = {}) {

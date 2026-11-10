@@ -256,7 +256,8 @@ test('EditLines uses exact source and preserves lines outside the range', () => 
   const [read] = payload.editable_reads;
   assert.match(read.read_id, /^r[0-9a-f]{12}$/);
   assert.deepEqual(read, {read_id:request.editableReads[0].read_id,file_path:'module.js',start_line:7,end_line:9});
-  assert.ok(payload.tools.some(tool => tool.name === 'EditLines'));
+  assert.ok(!payload.tools.some(tool => tool.name === 'EditLines'));
+  assert.match(request.prompt, /standalone EDIT frame shown below, outside JSON/);
   assert.ok(!payload.tools.some(tool => tool.name === 'Edit'));
   const header = JSON.stringify({request_id:request.requestId, content:[
     {type:'tool_use',name:'EditLines',input:{read_id:'read-x',start_line:8,end_line:8}}
@@ -269,6 +270,29 @@ test('EditLines uses exact source and preserves lines outside the range', () => 
     old_string:'const a = 1;\n  return "old";\n}',
     new_string:'const a = 1;\n  return "\\\\n";\n}'
   });
+});
+
+test('large translated edits keep the changed lines and linked result in the WhatsApp transcript', () => {
+  const unchanged = 'const value = "' + 'a'.repeat(20000) + '";';
+  const request = lineEditRequest([], {
+    type:'tool_result',tool_use_id:'read-x',content:'7\t' + unchanged + '\n8\treturn "old";\n9\t}'
+  });
+  const [edit] = parseReply('EDIT ' + request.editableReads[0].read_id + ' 8 8\nreturn "new";\nEND',
+    request, {matchedTurn:true}).content;
+  assert.equal(edit.input.old_string, unchanged + '\nreturn "old";\n}');
+  assert.equal(edit.input.new_string, unchanged + '\nreturn "new";\n}');
+  const result = {type:'tool_result',tool_use_id:edit.id,content:'File updated.'};
+  const followUp = lineEditRequest([
+    {role:'assistant',content:[edit]},
+    {role:'user',content:[result]}
+  ], {type:'tool_result',tool_use_id:'read-x',content:'7\t' + unchanged + '\n8\treturn "old";\n9\t}'});
+  const {messages} = JSON.parse(followUp.prompt.split('CURRENT REQUEST:\n')[1]);
+  assert.equal(followUp.prompt.split('a'.repeat(20000)).length, 2);
+  assert.deepEqual(messages[2].content[0], {
+    type:'tool_use',id:edit.id,name:'Edit',input:{file_path:'module.js'},
+    changed_lines:{before:'return "old";',after:'return "new";'}
+  });
+  assert.equal(messages[3].content[0].tool_use_id, edit.id);
 });
 
 test('short edit frames require a matched turn and the current Read handle', () => {
