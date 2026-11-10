@@ -28,6 +28,13 @@ For a first check:
 
     node /path/to/whatsapp-code/src/launch.mjs -p 'Reply with hello.'
 
+To start an attachable Claude Code session in a trusted project, pass an initial task with `--bg`:
+
+    node /path/to/whatsapp-code/src/launch.mjs --bg -- 'Run the test suite.'
+    claude attach <session-id>
+
+Use the session ID printed by the launcher. Claude Code manages the background session and terminal interface.
+
 The launcher uses a compact coding prompt and requests the Read, Write, Edit, Glob, Grep, and Bash tools. Claude Code selects which tools appear in the request. The default launcher uses Claude Code's safe mode to expose native tools while disabling ordinary hooks, plugins, and MCP servers. The fixed-file verification modes use bare mode. The launcher supplies the actual working directory, a root file listing, and root AGENTS.md/CLAUDE.md contents to Meta AI; it does not read unrelated file contents. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
 
 ## Data and access

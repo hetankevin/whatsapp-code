@@ -23,7 +23,7 @@ if(!health.ready){console.error(`WhatsApp not ready: ${health.status}`);process.
 const env={...process.env};
 for(const k of Object.keys(env)) if(k.startsWith('ANTHROPIC_')||k.startsWith('CLAUDE_CODE_USE_')||k==='CLAUDE_CODE_OAUTH_TOKEN'||k==='CLAUDECODE') delete env[k];
 Object.assign(env,{
- ANTHROPIC_BASE_URL:base, ANTHROPIC_API_KEY:token,
+ ANTHROPIC_BASE_URL:base, ANTHROPIC_AUTH_TOKEN:token,
  ANTHROPIC_MODEL:'meta-ai-whatsapp',ANTHROPIC_DEFAULT_OPUS_MODEL:'meta-ai-whatsapp',ANTHROPIC_DEFAULT_SONNET_MODEL:'meta-ai-whatsapp',ANTHROPIC_DEFAULT_HAIKU_MODEL:'meta-ai-whatsapp',
  CLAUDE_CODE_SUBAGENT_MODEL:'meta-ai-whatsapp',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',
  MAX_THINKING_TOKENS:'0',CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING:'1',API_TIMEOUT_MS:'150000',CLAUDE_CODE_MAX_RETRIES:'0'
