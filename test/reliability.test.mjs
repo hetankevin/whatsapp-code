@@ -253,7 +253,9 @@ function lineEditRequest(extra = [], result = {type:'tool_result',tool_use_id:'r
 test('EditLines uses exact source and preserves lines outside the range', () => {
   const request = lineEditRequest();
   const payload = JSON.parse(request.prompt.split('CURRENT REQUEST:\n')[1]);
-  assert.deepEqual(payload.editable_reads, [{read_id:'read-x',file_path:'module.js',start_line:7,end_line:9}]);
+  const [read] = payload.editable_reads;
+  assert.match(read.read_id, /^r[0-9a-f]{12}$/);
+  assert.deepEqual(read, {read_id:request.editableReads[0].read_id,file_path:'module.js',start_line:7,end_line:9});
   assert.ok(payload.tools.some(tool => tool.name === 'EditLines'));
   assert.ok(!payload.tools.some(tool => tool.name === 'Edit'));
   const header = JSON.stringify({request_id:request.requestId, content:[
@@ -267,6 +269,23 @@ test('EditLines uses exact source and preserves lines outside the range', () => 
     old_string:'const a = 1;\n  return "old";\n}',
     new_string:'const a = 1;\n  return "\\\\n";\n}'
   });
+});
+
+test('short edit frames require a matched turn and the current Read handle', () => {
+  const original = lineEditRequest();
+  const oldHandle = original.editableReads[0].read_id;
+  const frame = handle => 'EDIT ' + handle + ' 8 8 INDENT\n2|return "new";\nEND';
+  assert.throws(() => parseReply(frame(oldHandle), original), /does not match/);
+  const parsed = parseReply(frame(oldHandle), original, {matchedTurn:true});
+  assert.equal(parsed.content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+
+  const fresh = lineEditRequest([
+    {role:'assistant',content:[{type:'tool_use',name:'Read',id:'read-y',input:{file_path:'module.js',offset:7}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'read-y',content:'7\tconst a = 2;\n8\t  return "newer";\n9\t}'}]}
+  ]);
+  assert.throws(() => parseReply(frame(oldHandle), fresh, {matchedTurn:true}), /current Read snapshot/);
+  const next = parseReply(frame(fresh.editableReads[0].read_id), fresh, {matchedTurn:true});
+  assert.equal(next.content[0].input.old_string, 'const a = 2;\n  return "newer";\n}');
 });
 
 test('range edits reject unobserved lines, stale snapshots, and parallel calls', () => {
@@ -392,7 +411,7 @@ test('snapshot context keeps one current read and the latest test outcome', () =
   const state = payload(request);
   assert.equal(state.task, 'Fix CSV.');
   assert.equal(state.current_file, messages.at(-1).content[0].content);
-  assert.deepEqual(state.editable_reads.map(read => read.read_id), ['current']);
+  assert.deepEqual(state.editable_reads.map(read => request.readHandles.get(read.read_id)), ['current']);
   assert.deepEqual(state.latest_test_failure, {command: 'node --test', failure: 'not ok 1 - quoted empty field'});
   assert.doesNotMatch(request.prompt, /obsolete source|older instructions read|"messages":/);
   const edit = readId => 'EDIT ' + request.requestId + ' ' + readId + ' 2 2\n  return [[""]];\nEND ' + request.requestId;

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { testState, testCommand } from './failed-tests.mjs';
@@ -103,20 +103,22 @@ function resolveLineEdit(input, request) {
   const {read_id, start_line, end_line} = input;
   let replacement = input.new_string;
   const embedded = replacement.trim();
-  if (/^EDIT[ \t]+[0-9a-f]{24}(?:[ \t]|\r?\n|$)/.test(embedded)) {
+  if (/^EDIT[ \t]+(?:r[0-9a-f]{12}|[0-9a-f]{24})(?:[ \t]|\r?\n|$)/.test(embedded)) {
     // A live reply wrapped a complete EDIT frame in the replacement string.
     // Only unwrap the current request and the exact same snapshot and range.
     let decoded;
     try { decoded = parseLineFrame(embedded, true); }
     catch { throw repairableError('Send one complete EDIT frame, outside the replacement source.'); }
-    if (decoded.request_id !== request.requestId) throw staleRequestError('Nested EDIT uses a stale request ID. Send one EDIT frame for this request.');
+    if (decoded.request_id !== undefined && decoded.request_id !== request.requestId) {
+      throw staleRequestError('Nested EDIT uses a stale request ID. Send one EDIT frame for this request.');
+    }
     const nested = decoded.content[0].input;
     if (nested.read_id !== read_id || nested.start_line !== start_line || nested.end_line !== end_line) {
       throw repairableError('Nested EDIT metadata disagrees with the requested range. Send one EDIT frame.');
     }
     replacement = nested.new_string;
   }
-  const snapshot = request.snapshots.get(read_id);
+  const snapshot = request.snapshots.get(request.readHandles.get(read_id) ?? read_id);
   if (!snapshot) throw repairableError('EditLines needs a current Read snapshot. Use a read_id from editable_reads or call Read again.');
   const {first, lines, filePath} = snapshot;
   if (start_line < first || end_line < start_line || end_line >= first + lines.length) {
@@ -165,17 +167,20 @@ function decodeIndentation(source) {
 
 // A short header avoids putting code or delimiter punctuation inside JSON.
 function parseLineFrame(text, inferIndent = false) {
-  const match = /^EDIT[ \t]+(\S+)[ \t]+(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n([\s\S]*?)\r?\nEND[ \t]+(\S+)$/.exec(text);
+  const match = /^EDIT[ \t]+(?:(\S+)[ \t]+)?(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n([\s\S]*?)\r?\nEND(?:[ \t]+(\S+))?$/.exec(text);
   if (!match || match[1] !== match[7]) throw new SyntaxError('Incomplete EDIT frame.');
-  const [, request_id, read_id, start, end, mode, body] = match;
+  const [, requestId, read_id, start, end, mode, body] = match;
   const fence = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/.exec(body);
   const source = fence ? fence[2] : body;
   const encoded = mode === 'INDENT' ||
     (inferIndent && source.split('\n').every(line => indentationPrefix.test(line)));
-  return {request_id, content:[{
-    type:'tool_use', name:'EditLines',
-    input:{read_id, start_line:Number(start), end_line:Number(end), new_string:encoded ? decodeIndentation(source) : source}
-  }]};
+  return {
+    ...(requestId === undefined ? {} : {request_id: requestId}),
+    content:[{
+      type:'tool_use', name:'EditLines',
+      input:{read_id, start_line:Number(start), end_line:Number(end), new_string:encoded ? decodeIndentation(source) : source}
+    }]
+  };
 }
 
 // The WhatsApp transport matches replies to the exact outbound message. In the
@@ -379,8 +384,15 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const snapshots = editFiles
     ? new Map([...reads].filter(([, snapshot]) => editFiles.includes(snapshot.filePath)))
     : useSnapshot ? new Map([...reads].slice(-1)) : reads;
-  const editableReads = [...snapshots].map(([read_id, {filePath, first, lines}]) =>
-    ({read_id, file_path:filePath, start_line:first, end_line:first + lines.length - 1}));
+  // Handles follow the native Read ID, so rereading the same path produces
+  // a new handle. Keep native IDs available for older clients.
+  const readHandles = new Map();
+  const editableReads = [...snapshots].map(([id, {filePath, first, lines}]) => {
+    const handle = 'r' + createHash('sha256').update(id).digest('hex').slice(0, 12);
+    const read_id = readHandles.has(handle) || snapshots.has(handle) ? id : handle;
+    readHandles.set(read_id, id);
+    return {read_id, file_path:filePath, start_line:first, end_line:first + lines.length - 1};
+  });
   const modelTools = rangeEnabled ? tools.map(tool => tool.name === 'Edit' ? lineEditTool : tool) : tools;
   const {failures, latestFailure} = testState(taskMessages);
   const testFailures = choice.type === 'auto' ? failures : new Map();
@@ -412,12 +424,12 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const payload = {
     tools: modelTools.map(({name, description, input_schema}) => ({name, description, input_schema})),
     tool_choice: choice,
-    editable_reads: rangeEnabled ? editableReads : undefined,
     ...(useSnapshot ? {
       task: messages[taskIndex].content,
       current_file: numberedSource(currentRead),
       latest_test_failure: latestFailure,
-      last_tool_status: latestToolStatus(taskMessages)
+      last_tool_status: latestToolStatus(taskMessages),
+      editable_reads: editableReads
     } : {
       failed_tests: testFailures.size ? [...testFailures].slice(-2).map(([command, failure]) => ({command, failure})) : undefined,
       messages: focusRequest
@@ -425,6 +437,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
           ? {role: 'user', content: '[See current_request below.]'}
           : message)
         : messages,
+      editable_reads: rangeEnabled ? editableReads : undefined,
       current_request: focusRequest ? messages[taskIndex].content : undefined
     })
   };
@@ -436,9 +449,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       ? 'Send bare code between the markers. Omit Markdown fences. To encode indentation, append INDENT to the EDIT header and prefix every line with its space count and | (for example 2|return value;).'
       : 'A fenced code block around the replacement is encouraged to preserve indentation.') +
       ' To delete the selected lines, leave one empty line between the header and footer.',
-    'EDIT ' + requestId + ' READ_ID START END_LINE',
+    'EDIT READ_ID START END_LINE',
     'literal replacement code',
-    'END ' + requestId
+    'END'
   ].join('\n') : '';
   const system = content(body.system ?? '');
   const systemText = typeof system === 'string' ? system : system.map(b => b.text ?? '').join('\n');
@@ -473,7 +486,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   }
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
-  return {prompt, requestId, validators, choice, snapshots, editableReads, rangeGuide: editGuide, testFailures,
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, rangeGuide: editGuide, testFailures,
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditTool.input_schema) : null, model, editFiles, maxChars};
 }
 

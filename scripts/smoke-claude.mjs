@@ -77,11 +77,11 @@ const server = createGateway({
       assert.ok(last && !last.is_error, 'Claude Code must successfully execute each tool');
       if (results.length === 1) {
         assert.ok(JSON.stringify(last.content).includes(secret), 'Read must return the actual fixture content');
-        const read = payload.editable_reads.find(read => read.read_id === last.tool_use_id);
+        const read = payload.editable_reads.find(read => read.file_path === target);
         assert.ok(read, 'Claude Code must return a numbered Read snapshot');
-        const frame = 'EDIT ' + request.requestId + ' ' + read.read_id + ' 1 1 INDENT\n' +
-          '0|' + source.slice(0, -1) + '\nEND ' + request.requestId;
-        return parseReply(frame, request);
+        const frame = 'EDIT ' + read.read_id + ' 1 1 INDENT\n' +
+          '0|' + source.slice(0, -1) + '\nEND';
+        return parseReply(frame, request, {matchedTurn: true});
       }
       if (results.length === 2) {
         assert.equal(await readFile(target, 'utf8'), source, 'The framed source must reach Edit unchanged');
