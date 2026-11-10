@@ -9,10 +9,13 @@ import assert from 'node:assert/strict';
 import { createGateway, root } from '../src/server.mjs';
 import { parseReply } from '../src/protocol.mjs';
 
-const verifyEdits = process.argv.includes('--verify-edits');
+const multiFile = process.argv.includes('--verify-files');
+const verifyEdits = multiFile || process.argv.includes('--verify-edits');
 const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'whatsapp-code-test-')));
 const state = path.join(dir, 'state');
 const target = path.join(dir, 'verified.mjs');
+const helper = path.join(dir, 'helper.mjs');
+const helperSource = 'export const suffix = "ready";\n';
 const secret = randomBytes(12).toString('hex');
 const original = '// ' + secret + '\n';
 const expected = 'verified: ' + secret;
@@ -20,12 +23,15 @@ const source = verifyEdits ? 'export const value = ' + JSON.stringify(expected) 
   : 'console.log("' + expected + '");\n';
 await mkdir(state);
 await writeFile(target, verifyEdits ? 'export const value = "initial"; // ' + secret + '\n' : original);
+if (multiFile) await writeFile(helper, 'export const suffix = "pending";\n');
 if (verifyEdits) {
   await writeFile(path.join(dir, 'behavior.test.mjs'), [
     'import test from "node:test";',
     'import assert from "node:assert/strict";',
     'import {value} from "./verified.mjs";',
-    'test("reports expected result", () => assert.equal(value, ' + JSON.stringify(expected) + '));'
+    ...(multiFile ? ['import {suffix} from "./helper.mjs";'] : []),
+    'test("reports expected result", () => { assert.equal(value, ' + JSON.stringify(expected) + ');' +
+      (multiFile ? ' assert.equal(suffix, "ready");' : '') + ' });'
   ].join('\n'));
 }
 await writeFile(path.join(state, 'gateway-token'), 'test-key');
@@ -41,18 +47,24 @@ const server = createGateway({
       if (verifyEdits) {
         assert.ok(rounds <= 2, 'Passing tests should end the loop without another model call');
         assert.match(request.prompt, /not ok 1 - reports expected result/);
-        assert.ok(request.prompt.includes(rounds === 1 ? secret : '"still wrong"'), `Unexpected snapshot on proposal ${rounds}: ${request.prompt}`);
-        assert.equal(request.editableReads.length, 1);
-        const replacement = rounds === 1 ? 'export const value = "still wrong";' : source.trimEnd();
+        const expectedSnapshot = rounds === 1 ? secret : multiFile ? source.trimEnd() : '"still wrong"';
+        assert.ok(request.prompt.includes(expectedSnapshot), `Unexpected snapshot on proposal ${rounds}: ${request.prompt}`);
+        assert.equal(request.editableReads.length, multiFile ? 2 : 1);
+        if (multiFile) assert.ok(request.prompt.includes('export const suffix = "pending";'));
+        const replacement = multiFile
+          ? (rounds === 1 ? source : helperSource).trimEnd()
+          : rounds === 1 ? 'export const value = "still wrong";' : source.trimEnd();
+        const selector = multiFile ? 'FILE ' + rounds + '\n' : '';
         const frame = 'REPLACE 1 1 INDENT\n0|' + replacement + '\nEND';
-        assert.throws(() => parseReply(frame.replace('1 1', '1 9999'), request), /outside/);
+        assert.throws(() => parseReply(selector + frame.replace('1 1', '1 9999'), request), /outside/);
         const shell = JSON.stringify({request_id: request.requestId, content: [
           {type: 'tool_use', name: 'Bash', input: {command: 'node --test'}}
         ]});
         assert.throws(() => parseReply(shell, request), /Propose one line edit/);
         const fence = '\x60'.repeat(3);
         const proposal = rounds === 1 ? frame : fence + 'js\n' + replacement + '\n' + fence;
-        return parseReply(proposal, request);
+        if (multiFile) assert.throws(() => parseReply('FILE 9\n' + proposal, request), /code frame/);
+        return parseReply(selector + proposal, request);
       }
       const payload = JSON.parse(request.prompt.split('CURRENT REQUEST:\n')[1]);
       const results = payload.messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
@@ -93,7 +105,8 @@ try {
   ], {
     cwd: dir,
     env: {...process.env, WA_STATE_DIR: state, WA_PORT: String(server.address().port),
-      WA_EDIT_FILE: verifyEdits ? target : '', CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config')},
+      WA_EDIT_FILE: verifyEdits && !multiFile ? target : '',
+      WA_EDIT_FILES: multiFile ? JSON.stringify([target, helper]) : '', CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config')},
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stdout = '', stderr = '';
@@ -106,7 +119,8 @@ try {
   if (verifyEdits) {
     assert.equal(rounds, 2);
     assert.equal(await readFile(target, 'utf8'), source);
-    assert.match(stdout, /ran node --test successfully and reread the file/);
+    if (multiFile) assert.equal(await readFile(helper, 'utf8'), helperSource);
+    assert.match(stdout, /ran node --test successfully and reread (?:the file|the selected files)/);
     console.log('PASS: The harness tested and reread after each edit, then stopped when the tests passed.');
   } else {
     assert.ok(rounds >= 4);

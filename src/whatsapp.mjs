@@ -62,7 +62,7 @@ export class WhatsApp {
     // Match the original sent message; never route another chat/turn into this request.
     if (e.target !== p.id && !p.messageIds.has(e.edit_target)) return;
     p.messageIds.add(e.id);
-    const text = extractText(e.message, !!p.request.editFile);
+    const text = extractText(e.message, !!p.request.editFiles);
     if (!text) return;
     p.lastError = null;
     let reply;
@@ -92,7 +92,7 @@ export class WhatsApp {
     if (p.request.validators.has('Edit') && !p.request.rangeGuide) {
       frames.push('For Edit, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then lines <<<OLD>>>, exact old source, <<<NEW>>>, literal replacement, and <<<END>>>. Omit input.old_string and input.new_string from the header.');
     }
-    const repair = p.request.editFile
+    const repair = p.request.editFiles
       ? 'Your previous edit was rejected: ' + error.message + '\n\n' + p.request.prompt
       : [
       'Your previous reply was rejected: ' + error.message,

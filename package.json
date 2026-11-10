@@ -11,7 +11,7 @@
     "build": "node scripts/build.mjs",
     "start": "node src/server.mjs",
     "test": "node --test",
-    "test:claude": "node scripts/smoke-claude.mjs && node scripts/smoke-claude.mjs --verify-edits",
+    "test:claude": "node scripts/smoke-claude.mjs && node scripts/smoke-claude.mjs --verify-edits && node scripts/smoke-claude.mjs --verify-files",
     "claude": "node src/launch.mjs"
   },
   "engines": {

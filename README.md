@@ -61,6 +61,7 @@ The device database, gateway token, and pairing page stay in local application s
 | WA_BOT_JID | discovered | Explicit known Meta AI address; set on server |
 | WA_SNAPSHOT_CONTEXT | off | Set to 1 on the server to try single-file snapshot context |
 | WA_EDIT_FILE | unset | Single file to edit with automatic Node test runs. Set on the launcher. |
+| WA_EDIT_FILES | unset | JSON array of up to eight existing file paths for automatic verification. Set on the launcher. |
 | GO_BINARY | go | Compiler for npm run build |
 
 Supported explicit bot addresses are defined by whatsmeow: 1807055946647697@bot (Muse), 867051314767696@bot (Meta AI), and 13135550002@s.whatsapp.net (legacy). An override does not establish account eligibility.
@@ -98,6 +99,18 @@ For a single-file Node task, set `WA_EDIT_FILE` on the launcher from the project
 The gateway asks Claude Code to run `node --test` and read that file before the first proposal and after every successful edit. Meta AI receives the task, numbered source, and latest failure, and supplies replacement source. The gateway ties it to the current file snapshot and Claude Code checks the old text before editing. Claude Code still applies its normal permissions. The harness stops when the project tests pass or after five edits with failing tests. To run the live CSV fixture in this mode:
 
     python3 scripts/eval_coding.py --verify-edits --prompts compact --tasks csv
+
+For a task that spans files, set `WA_EDIT_FILES` to a JSON array:
+
+    WA_EDIT_FILES='["book-store.mjs","discount.mjs"]' node /path/to/whatsapp-code/src/launch.mjs -p 'Fix basket pricing.'
+
+Meta AI selects one of those files per proposal. Claude Code tests and rereads all selected files before the next proposal. The same five-edit budget applies to the whole task.
+
+Run the two-task Exercism pilot with:
+
+    python3 -B scripts/eval_exercism.py
+
+The runner downloads canonical cases from a pinned revision of [Exercism's problem specifications](https://github.com/exercism/problem-specifications/tree/7b49ec415e9169cce4aa0206d2b51ce66d98b9aa). It supplies some cases during the edit loop and reserves the rest for scoring. Book Store uses a two-file adaptation, with a separate test for the discount helper. In the first live run, Alphametics passed all cases in 10.5 seconds. Book Store changed both files but passed only five of seven visible tests within the five-edit budget. Its greedy grouping missed cases where two groups of four cost less than groups of five and three. Results are stored in ignored `.work/coding-evals-exercism`.
 
 The live development exercises run with:
 

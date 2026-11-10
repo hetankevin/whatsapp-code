@@ -28,16 +28,21 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       const chunks=[]; let size=0;
       for await (const chunk of req) {size+=chunk.length; if(size>1024*1024) throw new GatewayError('Request too large.',413); chunks.push(chunk);}
       let body; try {body=JSON.parse(Buffer.concat(chunks));} catch {throw new GatewayError('Invalid JSON.');}
-      let editFile;
+      let editFiles;
+      const requestedFiles = req.headers['x-wa-edit-files'];
       const requestedFile = req.headers['x-wa-edit-file'];
-      if (requestedFile) {
-        try { editFile = decodeURIComponent(requestedFile); }
-        catch { throw new GatewayError('Invalid edit target.'); }
-        if (!path.isAbsolute(editFile) || /[\x00-\x1f]/.test(editFile)) {
-          throw new GatewayError('Edit target must be an absolute file path.');
+      if (requestedFiles || requestedFile) {
+        try {
+          editFiles = requestedFiles ? JSON.parse(decodeURIComponent(requestedFiles)) : [decodeURIComponent(requestedFile)];
+        } catch { throw new GatewayError('Invalid edit targets.'); }
+        if (!Array.isArray(editFiles) || !editFiles.length || editFiles.length > 8 ||
+            editFiles.some(file => typeof file !== 'string' || !path.isAbsolute(file) ||
+              /[\x00-\x1f]/.test(file) || path.normalize(file) !== file) ||
+            new Set(editFiles).size !== editFiles.length) {
+          throw new GatewayError('Supply one to eight distinct absolute edit paths.');
         }
       }
-      const request = prepare(body, maxChars, snapshotContext, editFile);
+      const request = prepare(body, maxChars, snapshotContext, editFiles);
       if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       res.on('close', () => {if(!res.writableEnded) controller.abort();});
