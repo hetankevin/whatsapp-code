@@ -262,6 +262,33 @@ function parseWrappedLineFrame(text) {
   return reply;
 }
 
+// WhatsApp sometimes leaves quotes or newlines unescaped inside replacement
+// source. Recover only the final source field of one otherwise valid edit.
+function parseLiteralEditString(text) {
+  const start = /^([\s\S]*?"new_string"\s*:\s*")/.exec(text);
+  const end = /"\s*\}\s*\}\s*\]\s*\}$/.exec(text);
+  if (!start || !end || end.index < start[0].length) {
+    throw new SyntaxError('Missing replacement source boundaries.');
+  }
+  const reply = JSON.parse(start[1] + '"}}]}');
+  const calls = reply.content?.filter(block => block?.type === 'tool_use');
+  const call = calls?.[0];
+  if (calls?.length !== 1 || reply.content.at(-1) !== call || call.name !== 'EditLines') {
+    throw new SyntaxError('A literal replacement requires one EditLines call.');
+  }
+
+  const source = text.slice(start[0].length, end.index);
+  if (/^EDIT[ \t]/.test(source.trimStart()) ||
+      /"\s*,\s*"[^"\r\n]+"\s*:|"\s*\}\s*\}\s*,\s*\{/.test(source)) {
+    throw new SyntaxError('Ambiguous replacement source boundaries.');
+  }
+  const escaped = source.replace(/\\[\s\S]|["\u0000-\u001f]/g, token =>
+    token.length === 1 ? JSON.stringify(token).slice(1, -1) : token
+  );
+  call.input.new_string = JSON.parse('"' + escaped + '"');
+  return reply;
+}
+
 function latestTaskIndex(messages) {
   const isRequest = text => typeof text === 'string' && text.trim() &&
     !/^<system-reminder>[\s\S]*<\/system-reminder>$/.test(text.trim());
@@ -507,7 +534,10 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
       else if (/^EDIT[ \t]/.test(trimmed)) obj = parseLineFrame(trimmed);
       else {
         try { obj = parseCodeFrame(trimmed); }
-        catch { obj = parseWrappedLineFrame(trimmed); }
+        catch {
+          try { obj = parseWrappedLineFrame(trimmed); }
+          catch { obj = parseLiteralEditString(trimmed); }
+        }
       }
     }
   } catch {

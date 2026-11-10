@@ -288,6 +288,21 @@ test('short edit frames require a matched turn and the current Read handle', () 
   assert.equal(next.content[0].input.old_string, 'const a = 2;\n  return "newer";\n}');
 });
 
+test('literal quotes and line breaks in a final edit string preserve source bytes', () => {
+  const request = lineEditRequest();
+  const read = request.editableReads[0].read_id;
+  const envelope = (source, read_id = read) => '{"content":[{"type":"text","text":"I found the change."},' +
+    '{"type":"tool_use","name":"EditLines","input":' +
+    JSON.stringify({read_id,start_line:8,end_line:8}).slice(0,-1) +
+    ',"new_string":"' + source + '"}}]}';
+  const literal = '  const empty = "";\n  return empty + "\\\\n";';
+  const reply = parseReply(envelope(literal), request, {matchedTurn:true});
+  assert.equal(reply.content[1].input.new_string, 'const a = 1;\n  const empty = "";\n  return empty + "\\n";\n}');
+  assert.throws(() => parseReply(envelope(literal), request), /does not match/);
+  assert.throws(() => parseReply(envelope(literal, 'stale'), request, {matchedTurn:true}), /current Read snapshot/);
+  assert.throws(() => parseReply(envelope('line\n", "extra":"value'), request, {matchedTurn:true}), /complete protocol/);
+});
+
 test('range edits reject unobserved lines, stale snapshots, and parallel calls', () => {
   const call = (input = {}) => ({type:'tool_use',name:'EditLines',input:{
     read_id:'read-x',start_line:8,end_line:8,new_string:'',...input
