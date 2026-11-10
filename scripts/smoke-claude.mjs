@@ -9,15 +9,25 @@ import assert from 'node:assert/strict';
 import { createGateway, root } from '../src/server.mjs';
 import { parseReply } from '../src/protocol.mjs';
 
+const verifyEdits = process.argv.includes('--verify-edits');
 const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'whatsapp-code-test-')));
 const state = path.join(dir, 'state');
 const target = path.join(dir, 'verified.mjs');
 const secret = randomBytes(12).toString('hex');
 const original = '// ' + secret + '\n';
 const expected = 'verified: ' + secret;
-const source = 'console.log("' + expected + '");\n';
+const source = verifyEdits ? 'export const value = ' + JSON.stringify(expected) + ';\n'
+  : 'console.log("' + expected + '");\n';
 await mkdir(state);
-await writeFile(target, original);
+await writeFile(target, verifyEdits ? 'export const value = "initial"; // ' + secret + '\n' : original);
+if (verifyEdits) {
+  await writeFile(path.join(dir, 'behavior.test.mjs'), [
+    'import test from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import {value} from "./verified.mjs";',
+    'test("reports expected result", () => assert.equal(value, ' + JSON.stringify(expected) + '));'
+  ].join('\n'));
+}
 await writeFile(path.join(state, 'gateway-token'), 'test-key');
 
 let rounds = 0;
@@ -28,6 +38,22 @@ const server = createGateway({
     status: 'mock test',
     complete: async request => {
       rounds++;
+      if (verifyEdits) {
+        assert.ok(rounds <= 2, 'Passing tests should end the loop without another model call');
+        assert.match(request.prompt, /not ok 1 - reports expected result/);
+        assert.ok(request.prompt.includes(rounds === 1 ? secret : '"still wrong"'), `Unexpected snapshot on proposal ${rounds}: ${request.prompt}`);
+        assert.equal(request.editableReads.length, 1);
+        const replacement = rounds === 1 ? 'export const value = "still wrong";' : source.trimEnd();
+        const frame = 'REPLACE 1 1 INDENT\n0|' + replacement + '\nEND';
+        assert.throws(() => parseReply(frame.replace('1 1', '1 9999'), request), /outside/);
+        const shell = JSON.stringify({request_id: request.requestId, content: [
+          {type: 'tool_use', name: 'Bash', input: {command: 'node --test'}}
+        ]});
+        assert.throws(() => parseReply(shell, request), /Propose one line edit/);
+        const fence = '\x60'.repeat(3);
+        const proposal = rounds === 1 ? frame : fence + 'js\n' + replacement + '\n' + fence;
+        return parseReply(proposal, request);
+      }
       const payload = JSON.parse(request.prompt.split('CURRENT REQUEST:\n')[1]);
       const results = payload.messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
         .filter(block => block.type === 'tool_result');
@@ -62,12 +88,12 @@ try {
   const child = spawn(process.execPath, [
     path.join(root, 'src/launch.mjs'), '--print', '--no-session-persistence',
     '--restricted', '--tools', 'Read,Edit,Bash', '--permission-mode', 'dontAsk',
-    '--allowedTools', 'Read', 'Edit', 'Bash(node verified.mjs)', '--',
+    '--allowedTools', 'Read', 'Edit', verifyEdits ? 'Bash(node --test)' : 'Bash(node verified.mjs)', '--',
     'Read the fixture, write a small program, and run it.'
   ], {
     cwd: dir,
     env: {...process.env, WA_STATE_DIR: state, WA_PORT: String(server.address().port),
-      CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config')},
+      WA_EDIT_FILE: verifyEdits ? target : '', CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config')},
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stdout = '', stderr = '';
@@ -77,9 +103,16 @@ try {
   const [code] = await once(child, 'exit');
   clearTimeout(timer);
   assert.equal(code, 0, stderr + '\n' + stdout);
-  assert.ok(rounds >= 4);
-  assert.ok(stdout.includes(expected));
-  console.log('PASS: Claude Code read a file, applied a line-range edit, ran it, and returned the actual output.');
+  if (verifyEdits) {
+    assert.equal(rounds, 2);
+    assert.equal(await readFile(target, 'utf8'), source);
+    assert.match(stdout, /ran node --test successfully and reread the file/);
+    console.log('PASS: The harness tested and reread after each edit, then stopped when the tests passed.');
+  } else {
+    assert.ok(rounds >= 4);
+    assert.ok(stdout.includes(expected));
+    console.log('PASS: Claude Code read a file, applied a line-range edit, ran it, and returned the actual output.');
+  }
 } finally {
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

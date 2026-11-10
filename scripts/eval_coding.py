@@ -60,7 +60,7 @@ assert.equal(c.get('missing'),undefined);
 ''',
     },
     "csv": {
-        "task": "Implement parseCSV with comma-separated fields, quoted commas, doubled quote escapes, CRLF or LF row endings, and newlines inside quoted fields. Preserve empty fields, including a standalone quoted empty field as one row with one empty string. Omit the extra row after a final newline. Empty input returns []; an unclosed quoted field throws. Keep the existing named export and add no dependencies. Inspect project instructions, implement the feature, and run tests.",
+        "task": "Implement parseCSV with comma-separated fields, quoted commas, doubled quote escapes, CRLF or LF row endings, and newlines inside quoted fields. Preserve empty fields, including a standalone quoted empty field as one row with one empty string and a delimiter-only row such as two commas as three empty fields. Omit the extra row after a final newline. Empty input returns []; an unclosed quoted field throws. Keep the existing named export and add no dependencies. Inspect project instructions, implement the feature, and run tests.",
         "module": "csv.mjs",
         "source": '''export function parseCSV(text) {
   return text.split('\\n').map(line => line.split(','));
@@ -74,6 +74,7 @@ test('quoted comma',()=>assert.deepEqual(parseCSV('"a,b",c'),[['a,b','c']]));
 test('escaped quotes',()=>assert.deepEqual(parseCSV('"say ""hi""",x'),[['say "hi"','x']]));
 test('final newline',()=>assert.deepEqual(parseCSV('a,b\\n'),[['a','b']]));
 test('standalone quoted empty field',()=>assert.deepEqual(parseCSV('""'),[['']]));
+test('delimiter-only row',()=>assert.deepEqual(parseCSV(',,'),[['','','']]));
 ''',
         "judge": '''const {parseCSV} = await import(MODULE);
 assert.deepEqual(parseCSV(''),[]);
@@ -100,7 +101,7 @@ def is_test_command(command):
     except ValueError:
         return False
 
-def exercise(name, mode, timeout, output, tools):
+def exercise(name, mode, timeout, output, tools, verify_edits=False):
     spec = SCENARIOS[name]
     holder = Path(tempfile.mkdtemp(prefix="whatsapp-code-eval-"))
     project = holder / "project"; project.mkdir()
@@ -114,12 +115,19 @@ def exercise(name, mode, timeout, output, tools):
     baseline = run_test(project, spec)
     assert not (baseline["visible"] and baseline["held_out"]), "fixture must fail before edits"
     env = os.environ.copy(); env["CLAUDE_CONFIG_DIR"] = str(holder / "claude-config")
+    allowed_tools = ["Read", "Edit", "Write", "Glob", "Grep",
+                     "Bash(node --test*)", "Bash(git diff*)", "Bash(ls*)", "Bash(pwd)"]
+    if verify_edits:
+        env["WA_EDIT_FILE"] = spec["module"]
+        tools = "Read,Edit,Bash"
+        allowed_tools = ["Read", "Edit", "Bash(node --test)"]
+    else:
+        env.pop("WA_EDIT_FILE", None)
     command = ["node", str(ROOT / "src/launch.mjs"), "--harness-prompt", mode,
                "--print", "--verbose", "--output-format", "stream-json",
                "--no-session-persistence", "--restricted", "--permission-mode", "dontAsk",
                "--tools", tools,
-               "--allowedTools", "Read", "Edit", "Write", "Glob", "Grep",
-               "Bash(node --test*)", "Bash(git diff*)", "Bash(ls*)", "Bash(pwd)",
+               "--allowedTools", *allowed_tools,
                "--", spec["task"]]
     start = time.monotonic()
     timed_out = False
@@ -175,7 +183,7 @@ def exercise(name, mode, timeout, output, tools):
         usage = [e.get("message", {}).get("usage", {}).get("input_tokens", 0) for e in events if e.get("type") == "assistant"]
         result = {
             "scenario": name, "prompt": mode, "tools": tools.split(","),
-            "exit_code": code, "timed_out": timed_out,
+            "exit_code": code, "timed_out": timed_out, "verify_edits": verify_edits,
             "seconds": round(time.monotonic() - start, 1), **checked,
             "instructions_kept": instructions_kept, "implementation_only": implementation_only,
             "read_instructions": read_instructions,
@@ -202,10 +210,11 @@ if __name__ == "__main__":
     parser.add_argument("--prompts", nargs="+", choices=["compact", "coding", "native"], default=["compact", "coding"])
     parser.add_argument("--tasks", nargs="+", choices=list(SCENARIOS), default=list(SCENARIOS))
     parser.add_argument("--tools", choices=["Read,Edit,Write,Glob,Grep,Bash", "Read,Write,Bash"], default="Read,Edit,Write,Glob,Grep,Bash")
+    parser.add_argument("--verify-edits", action="store_true")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--output", type=Path, default=ROOT / ".work" / "coding-evals")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     for mode in args.prompts:
         for name in args.tasks:
-            exercise(name, mode, args.timeout, args.output, args.tools)
+            exercise(name, mode, args.timeout, args.output, args.tools, args.verify_edits)

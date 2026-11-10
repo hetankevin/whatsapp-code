@@ -36,6 +36,11 @@ test('unsupported media and oversized context are rejected without truncation',(
 });
 test('known rich response and nested fields extract only text',()=>{
  assert.equal(extractText({botForwardedMessage:{message:{richResponseMessage:{submessages:[{codeMetadata:{codeBlocks:[{codeContent:'{"x":'},{codeContent:'1}'}]}}]}}}}),'{"x":1}');
+ const code = '  return 1;';
+ const rich = {richResponseMessage:{submessages:[{codeMetadata:{codeBlocks:[{codeContent:code}]}}]}};
+ const fence = '\x60'.repeat(3);
+ assert.equal(extractText(rich),code);
+ assert.equal(extractText(rich,true),[fence,code,fence].join('\n'));
  assert.equal(extractText({secret:'not text',messageContextInfo:{persona:'ignore'}}),'');
 });
 test('WhatsApp matching rejects late replies and uses final JSON only',async()=>{

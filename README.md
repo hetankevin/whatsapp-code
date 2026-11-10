@@ -60,6 +60,7 @@ The device database, gateway token, and pairing page stay in local application s
 | WA_STATE_DIR | local application storage | Private runtime directory; set on server and launcher |
 | WA_BOT_JID | discovered | Explicit known Meta AI address; set on server |
 | WA_SNAPSHOT_CONTEXT | off | Set to 1 on the server to try single-file snapshot context |
+| WA_EDIT_FILE | unset | Single file to edit with automatic Node test runs. Set on the launcher. |
 | GO_BINARY | go | Compiler for npm run build |
 
 Supported explicit bot addresses are defined by whatsmeow: 1807055946647697@bot (Muse), 867051314767696@bot (Meta AI), and 13135550002@s.whatsapp.net (legacy). An override does not establish account eligibility.
@@ -71,7 +72,7 @@ The live test used 867051314767696@bot. The legacy phone address failed, and Mus
     npm test
     npm run test:claude
 
-The second command runs Claude Code in a temporary directory against a local fake model. It reads a fixture, applies a line-range edit, runs it, and verifies the output. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
+The second command runs Claude Code in a temporary directory against a local fake model. It checks a model-directed edit and the automatic test and reread loop, including recovery from a failing edit. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
 
 Dependencies are pinned in package-lock.json and transport/go.sum. Original code is MIT licensed; dependencies retain their licenses.
 
@@ -90,6 +91,14 @@ Select a prompt with --harness-prompt compact, --harness-prompt coding, or --har
 
 For a single-file task, start the gateway with `WA_SNAPSHOT_CONTEXT=1 npm start` to try sending less context. Each primary WhatsApp prompt includes the latest task, at most one current numbered Read snapshot, the latest test failure, and the status of the most recent tools. Claude Code keeps the full transcript and still handles tools and permissions. A shell command or edit invalidates the snapshot, so a fresh Read may be needed. This mode omits other tool output and is intended for experiments on bounded tasks.
 
+For a single-file Node task, set `WA_EDIT_FILE` on the launcher from the project root:
+
+    WA_EDIT_FILE=csv.mjs node /path/to/whatsapp-code/src/launch.mjs -p 'Fix empty fields in parseCSV.'
+
+The gateway asks Claude Code to run `node --test` and read that file before the first proposal and after every successful edit. Meta AI receives the task, numbered source, and latest failure, and supplies replacement source. The gateway ties it to the current file snapshot and Claude Code checks the old text before editing. Claude Code still applies its normal permissions. The harness stops when the project tests pass or after five edits with failing tests. To run the live CSV fixture in this mode:
+
+    python3 scripts/eval_coding.py --verify-edits --prompts compact --tasks csv
+
 The live development exercises run with:
 
     python3 scripts/eval_coding.py --prompts compact coding native
@@ -105,3 +114,5 @@ The short EDIT header and test recovery guard produced one pair that passed the 
 The CSV fixture now requires a standalone quoted empty field in the visible tests and two such rows in the held-out tests. The decoder recovered the captured EDIT frames with literal newlines and quotes inside malformed JSON. In the expanded live run, three edits applied, then the model sent a stale request ID. It did not pass both the quoted-empty and final-newline tests on the same patch. A separate retry with a row-state hint also failed.
 
 In the first live snapshot-mode CSV run, all visible tests passed, including the standalone quoted empty field. The held-out suite failed because the patch dropped a delimiter-only row. A retry with explicit fence-free edits and better syntax-error feedback ended on an undecodable reply before editing. Neither run met the full pass criteria.
+
+With automatic verification and source-only proposals, a live CSV run passed all six visible tests and the held-out checks in 20.7 seconds. The first edit passed the quoted-empty test and failed the delimiter-only test. The harness supplied the failure and fresh source, and the second edit passed. A separate probe found the generated parser dropped unquoted whitespace.

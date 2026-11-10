@@ -28,8 +28,17 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       const chunks=[]; let size=0;
       for await (const chunk of req) {size+=chunk.length; if(size>1024*1024) throw new GatewayError('Request too large.',413); chunks.push(chunk);}
       let body; try {body=JSON.parse(Buffer.concat(chunks));} catch {throw new GatewayError('Invalid JSON.');}
-      const request = prepare(body,maxChars,snapshotContext);
-      if (!backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
+      let editFile;
+      const requestedFile = req.headers['x-wa-edit-file'];
+      if (requestedFile) {
+        try { editFile = decodeURIComponent(requestedFile); }
+        catch { throw new GatewayError('Invalid edit target.'); }
+        if (!path.isAbsolute(editFile) || /[\x00-\x1f]/.test(editFile)) {
+          throw new GatewayError('Edit target must be an absolute file path.');
+        }
+      }
+      const request = prepare(body, maxChars, snapshotContext, editFile);
+      if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       res.on('close', () => {if(!res.writableEnded) controller.abort();});
       const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -38,7 +47,7 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
         send('ping',{type:'ping'});
         ping = setInterval(()=>send('ping',{type:'ping'}),10000);
       }
-      const result = await backend.complete(request,controller.signal);
+      const result = request.localResult ?? await backend.complete(request,controller.signal);
       if (body.stream) {streamMessage(result,send); res.end();}
       else sendJSON(200,result);
     } catch (err) {
