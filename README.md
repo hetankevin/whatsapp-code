@@ -47,7 +47,7 @@ The device database, gateway token, and pairing page stay in local application s
 
 ## Limits
 
-- One active request at a time; no parallel sessions or agents.
+- The gateway sends one request to WhatsApp at a time and queues overlapping requests in arrival order. Streaming requests receive keepalives while they wait.
 - The normal launcher uses Claude Code's native compaction. It defaults to a 26,000-token client window and a 2,048-token output setting to leave room for the compaction request. The gateway sends that request to Meta AI as text. Each WhatsApp prompt still has a 60,000-character cap, so large individual reads or tool outputs can exceed it.
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.

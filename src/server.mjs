@@ -8,6 +8,39 @@ import { GatewayError, prepare, streamMessage } from './protocol.mjs';
 
 export function createGateway({backend, token, maxChars = 60000, snapshotContext = false}) {
   let busy = false;
+  const waiting = new Set();
+  const cancelled = () => new GatewayError('Request cancelled.', 499);
+
+  function acquire(signal) {
+    if (signal.aborted) return Promise.reject(cancelled());
+    if (!busy) {
+      busy = true;
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const start = () => {
+        signal.removeEventListener('abort', abort);
+        resolve();
+      };
+      const abort = () => {
+        waiting.delete(start);
+        reject(cancelled());
+      };
+      waiting.add(start);
+      signal.addEventListener('abort', abort, {once: true});
+    });
+  }
+
+  function release() {
+    const next = waiting.values().next().value;
+    if (!next) {
+      busy = false;
+      return;
+    }
+    waiting.delete(next);
+    next();
+  }
+
   return http.createServer(async (req, res) => {
     const sendJSON = (status, obj) => {res.writeHead(status, {'content-type':'application/json','cache-control':'no-store'}); res.end(JSON.stringify(obj));};
     let ping;
@@ -23,8 +56,6 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       if (req.method === 'GET' && url.pathname === '/v1/models') return sendJSON(200,{data:[{id:'meta-ai-whatsapp',type:'model',display_name:'Meta AI via WhatsApp (experimental)',created_at:'2026-11-09T00:00:00Z'}],has_more:false,first_id:'meta-ai-whatsapp',last_id:'meta-ai-whatsapp'});
       if (req.method !== 'POST' || url.pathname !== '/v1/messages') throw new GatewayError('Unknown endpoint.',404);
       if (!String(req.headers['content-type']??'').startsWith('application/json')) throw new GatewayError('Expected application/json.',415);
-      if (busy) throw new GatewayError('A WhatsApp request is already running. Use one session at a time.',409);
-      busy = true; locked = true;
       const chunks=[]; let size=0;
       for await (const chunk of req) {size+=chunk.length; if(size>1024*1024) throw new GatewayError('Request too large.',413); chunks.push(chunk);}
       let body; try {body=JSON.parse(Buffer.concat(chunks));} catch {throw new GatewayError('Invalid JSON.');}
@@ -48,22 +79,31 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
         : prepare(body, maxChars, snapshotContext, editFiles);
       if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
-      res.on('close', () => {if(!res.writableEnded) controller.abort();});
+      if (res.destroyed) return;
+      res.once('close', () => {if(!res.writableEnded) controller.abort();});
       const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       if (body.stream) {
         res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-store','connection':'keep-alive','x-accel-buffering':'no'});
         send('ping',{type:'ping'});
         ping = setInterval(()=>send('ping',{type:'ping'}),10000);
       }
-      const result = request.localResult ?? await backend.complete(request,controller.signal);
+      let result = request.localResult;
+      if (!result) {
+        await acquire(controller.signal);
+        locked = true;
+        if (controller.signal.aborted || res.destroyed) throw cancelled();
+        if (!backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
+        result = await backend.complete(request,controller.signal);
+      }
       if (body.stream) {streamMessage(result,send); res.end();}
       else sendJSON(200,result);
     } catch (err) {
+      if (res.destroyed) return;
       const status = err instanceof GatewayError ? err.status : 500;
       const payload = {type:'error',error:{type:status===401?'authentication_error':status<500?'invalid_request_error':'api_error',message:err.message}};
       if (!res.headersSent) sendJSON(status,payload);
       else if (!res.destroyed) {res.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);res.end();}
-    } finally {clearInterval(ping); if(locked) busy=false;}
+    } finally {clearInterval(ping); if(locked) release();}
   });
 }
 

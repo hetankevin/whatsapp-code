@@ -65,7 +65,7 @@ async function withServer(fn,complete=async r=>parseReply(reply(r,[{type:'text',
  server.listen(0,'127.0.0.1');await once(server,'listening');
  try{await fn('http://127.0.0.1:'+server.address().port);}finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 }
-const post=(base,extra={},headers={})=>fetch(base+'/v1/messages?beta=true',{method:'POST',headers:{'content-type':'application/json','x-api-key':'test-key',...headers},body:JSON.stringify({...body(),...extra})});
+const post=(base,extra={},headers={},signal)=>fetch(base+'/v1/messages?beta=true',{method:'POST',signal,headers:{'content-type':'application/json','x-api-key':'test-key',...headers},body:JSON.stringify({...body(),...extra})});
 test('HTTP auth, browser isolation, endpoint handling, and SSE tool events',async()=>{
  await withServer(async base=>{
   assert.equal((await post(base,{}, {'x-api-key':'bad'})).status,401);
@@ -78,10 +78,77 @@ test('HTTP auth, browser isolation, endpoint handling, and SSE tool events',asyn
   assert.equal(events.find(x=>x.type==='message_delta').delta.stop_reason,'tool_use');
  },async r=>parseReply(reply(r,[{type:'tool_use',name:'Read',input:{file_path:'x'}}]),r));
 });
-test('overlapping requests are rejected before reaching WhatsApp',async()=>{
- let started,release; const begun=new Promise(r=>{started=r});const wait=new Promise(r=>{release=r});
- await withServer(async base=>{
-  const first=post(base);await begun;
-  assert.equal((await post(base)).status,409);release();assert.equal((await first).status,200);
- },async r=>{started();await wait;return parseReply(reply(r,[{type:'text',text:'done'}]),r)});
+test('overlapping requests reach WhatsApp in order, even after a backend error', async () => {
+  let started, release;
+  const begun = new Promise(resolve => { started = resolve; });
+  const wait = new Promise(resolve => { release = resolve; });
+  const completed = [];
+  const turn = (number, stream = true) => ({
+    stream, messages:[{role:'user',content:'queued-turn-' + number}]
+  });
+  await withServer(async base => {
+    const first = post(base, turn(1, false));
+    await begun;
+    try {
+      const second = await post(base, turn(2));
+      const third = await post(base, turn(3));
+      assert.equal(second.status, 200);
+      assert.equal(third.status, 200);
+      assert.deepEqual(completed, [1]);
+      release();
+      assert.equal((await first).status, 500);
+      for (const response of [second, third]) {
+        const events = await response.text();
+        assert.match(events, /^event: ping/);
+        assert.match(events, /event: message_stop/);
+      }
+      assert.deepEqual(completed, [1, 2, 3]);
+    } finally {
+      release();
+      await first;
+    }
+  }, async request => {
+    const number = Number(/queued-turn-(\d)/.exec(request.prompt)[1]);
+    completed.push(number);
+    if (number === 1) {
+      started();
+      await wait;
+      throw new Error('backend failure');
+    }
+    return parseReply(reply(request, [{type:'text',text:'done'}]), request);
+  });
+});
+
+test('disconnecting while queued skips the WhatsApp call', async () => {
+  let started, release;
+  const begun = new Promise(resolve => { started = resolve; });
+  const wait = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  await withServer(async base => {
+    const first = post(base);
+    await begun;
+    try {
+      const controller = new AbortController();
+      const cancelled = await post(base, {stream:true}, {}, controller.signal);
+      assert.equal(cancelled.status, 200);
+      controller.abort();
+      await assert.rejects(cancelled.text(), {name:'AbortError'});
+      const next = await post(base, {stream:true});
+      assert.equal(calls, 1);
+      release();
+      assert.equal((await first).status, 200);
+      assert.match(await next.text(), /event: message_stop/);
+      assert.equal(calls, 2);
+    } finally {
+      release();
+      await first;
+    }
+  }, async request => {
+    calls++;
+    if (calls === 1) {
+      started();
+      await wait;
+    }
+    return parseReply(reply(request, [{type:'text',text:'done'}]), request);
+  });
 });

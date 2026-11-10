@@ -52,7 +52,7 @@ if (editFiles.length) {
 } else if (harness.mode !== 'native') args.push('--system-prompt', harness.mode === 'coding' ? coding : compact);
 args.push('--append-system-prompt', await loadProjectContext());
 args.push(...harness.args);
-console.error('whatsapp-code: prompts and tool results go to Meta AI through your linked WhatsApp account. Experimental, one session at a time.');
+console.error('whatsapp-code: prompts and tool results go to Meta AI through your linked WhatsApp account. Experimental. The gateway queues overlapping requests.');
 const child=spawn('claude',args,{env,stdio:'inherit'});
 child.on('error',e=>{console.error(e.message);process.exit(1);});
 child.on('exit',(code,signal)=>{if(signal)process.kill(process.pid,signal);else process.exit(code??1);});
