@@ -47,6 +47,26 @@ test('format repair is bounded', async () => {
   assert.equal(f.writes.length,1);assert.match(f.rejected.message,/JSON/);
 });
 
+test('a matched reply without an answer gets one repair', async () => {
+  const reply = (id, target, body) => ({
+    event:'message', id, target, edit:'full', message:{conversation:JSON.stringify(body)}
+  });
+  for (const invalid of [{}, {content:[]}, {content:[{type:'text',text:'  '}]}]) {
+    const f = transportFixture();
+    await f.w.event(reply('empty', 'original', invalid));
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.rejected, undefined);
+    await f.w.event(reply('fixed', f.writes[0].id, {content:[{type:'text',text:'I am here.'}]}));
+    assert.equal(f.resolved.content[0].text, 'I am here.');
+  }
+
+  const f = transportFixture();
+  await f.w.event(reply('empty', 'original', {content:[]}));
+  await f.w.event(reply('still-empty', f.writes[0].id, {content:[]}));
+  assert.equal(f.writes.length, 1);
+  assert.match(f.rejected.message, /no content/);
+});
+
 test('stale IDs get one fresh prompt and ID-free calls still require a matched WhatsApp turn', async () => {
   const f = transportFixture([{name: 'Grep', input_schema: {
     type: 'object', properties: {pattern: {type: 'string'}}, required: ['pattern']

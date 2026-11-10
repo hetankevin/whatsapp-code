@@ -418,7 +418,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       messages
     })
   };
-  let prompt = `You are the model in a local coding harness. Answer only the current request below. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
+  let prompt = `You are the model in a local coding harness. Answer the latest user message in the supplied conversation. Use earlier messages only as context. Answer simple checks and greetings directly without tools. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nReturn one JSON object. Use no Markdown or surrounding prose. A text reply looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool instead, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
   const rangeGuide = rangeEnabled ? [
     'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
     'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement lines between the header and footer. ' +
@@ -494,7 +494,9 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
   if (explicitId ? obj.request_id !== request.requestId : !matchedTurn) {
     throw staleRequestError('Meta AI reply does not match this request.');
   }
-  if (!Array.isArray(obj?.content) || !obj.content.length) throw new GatewayError('Meta AI returned no content.', 502);
+  if (!Array.isArray(obj?.content) || !obj.content.length) {
+    throw repairableError('Meta AI returned no content.');
+  }
   if (request.editFiles && (obj.content.length !== 1 ||
       obj.content[0]?.type !== 'tool_use' || obj.content[0].name !== 'EditLines')) {
     throw repairableError('Propose one line edit. The harness handles all other actions.');
@@ -504,7 +506,10 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
     throw repairableError('Send one EditLines call without other tools.');
   }
   const blocks = obj.content.map(b => {
-    if (b?.type === 'text' && typeof b.text === 'string' && b.text.length) return {type: 'text', text: b.text};
+    if (b?.type === 'text' && typeof b.text === 'string') {
+      if (!b.text.trim()) throw repairableError('Meta AI returned a blank text reply.');
+      return {type: 'text', text: b.text};
+    }
     if (b?.type !== 'tool_use') throw new GatewayError('Meta AI returned an unknown content block or tool.', 502);
     const lineEdit = hasLineEdit && b.name === 'EditLines';
     const name = lineEdit ? 'Edit' : b.name;

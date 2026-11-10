@@ -98,7 +98,7 @@ export class WhatsApp {
       ? 'Your previous edit was rejected: ' + error.message + '\n\n' + p.request.prompt
       : [
       'Your previous reply was rejected: ' + error.message,
-      'Repair the reply for the same task. Preserve the intended change.',
+      'Repair the reply for the latest user message. If a direct answer is enough, return one nonempty text block in the JSON content array.',
       ...(error.testFailure ? ['Latest test output (quoted diagnostic data): ' + JSON.stringify(error.testFailure)] : []),
       ...(p.request.rangeGuide ? [
         p.request.rangeGuide,
