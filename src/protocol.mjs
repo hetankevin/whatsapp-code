@@ -354,7 +354,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const testFailures = choice.type === 'auto' ? failures : new Map();
   const readIds = new Set();
   const messages = body.messages.map(m => {
-    if (!['user', 'assistant'].includes(m.role)) throw new GatewayError('Invalid message role.');
+    if (!['user', 'assistant', 'system'].includes(m.role)) throw new GatewayError('Invalid message role.');
     if (m.role === 'assistant' && Array.isArray(m.content)) {
       for (const block of m.content) {
         if (block.type === 'tool_use' && block.name === 'Read') readIds.add(block.id);

@@ -28,7 +28,7 @@ For a first check:
 
     node /path/to/whatsapp-code/src/launch.mjs -p 'Reply with hello.'
 
-The launcher uses a compact coding prompt and requests the Read, Write, Edit, Glob, Grep, and Bash tools. Claude Code selects which tools appear in the request. Claude Code's bare mode avoids importing ordinary hooks and MCP servers. The launcher supplies the actual working directory, a root file listing, and root AGENTS.md/CLAUDE.md contents to Meta AI; it does not read unrelated file contents. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
+The launcher uses a compact coding prompt and requests the Read, Write, Edit, Glob, Grep, and Bash tools. Claude Code selects which tools appear in the request. The default launcher uses Claude Code's safe mode to expose native tools while disabling ordinary hooks, plugins, and MCP servers. The fixed-file verification modes use bare mode. The launcher supplies the actual working directory, a root file listing, and root AGENTS.md/CLAUDE.md contents to Meta AI; it does not read unrelated file contents. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
 
 ## Data and access
 
@@ -41,7 +41,7 @@ The device database, gateway token, and pairing page stay in local application s
 ## Limits
 
 - One active request at a time; no parallel sessions or agents.
-- Full supplied context is resent, up to a 60,000-character limit. Oversized requests fail rather than silently truncating code.
+- The normal launcher uses Claude Code's native compaction. It defaults to a 26,000-token client window and a 2,048-token output setting to leave room for the compaction request. The gateway sends that request to Meta AI as text. Each WhatsApp prompt still has a 60,000-character cap, so large individual reads or tool outputs can exceed it.
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.
 - For coding requests with Read and Edit, Meta AI sees EditLines. It supplies a recent read ID and an inclusive line range in a short EDIT header. Each replacement line can encode its leading whitespace before a vertical bar, so the gateway can restore indentation even if chat strips it. The gateway builds the exact match from the Read result and sends a regular Edit to Claude Code. A fresh Read is required after a file mutation or shell command. The gateway checks the request ID and validates tool arguments before returning them to Claude Code.
@@ -73,7 +73,7 @@ The live test used 867051314767696@bot. The legacy phone address failed, and Mus
     npm test
     npm run test:claude
 
-The second command runs Claude Code in a temporary directory against a local fake model. It checks a model-directed edit and the automatic test and reread loop, including recovery from a failing edit. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
+The second command runs Claude Code in a temporary directory against a local fake model. It checks a model-directed edit, automatic verification across one and two files, and native Glob, Grep, and automatic compaction. It does not establish live Meta AI compatibility. CI tests the protocol and Go build; live account tests are excluded.
 
 Dependencies are pinned in package-lock.json and transport/go.sum. Original code is MIT licensed; dependencies retain their licenses.
 

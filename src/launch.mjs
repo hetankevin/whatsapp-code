@@ -29,9 +29,15 @@ Object.assign(env,{
  MAX_THINKING_TOKENS:'0',CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING:'1',API_TIMEOUT_MS:'150000',CLAUDE_CODE_MAX_RETRIES:'0'
 });
 if (editFiles.length) env.ANTHROPIC_CUSTOM_HEADERS = 'x-wa-edit-files: ' + encodeURIComponent(JSON.stringify(editFiles));
+else {
+ // Leave space for Claude Code's own compaction request below the WhatsApp cap.
+ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ??= '26000';
+ env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ??= '2048';
+}
+env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = '1';
 // A compact prompt and core tools keep the request within one WhatsApp message.
 // Permissions stay with Claude Code. No bypass flags or global settings edits.
-const args=['--bare','--setting-sources','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
+const args=[editFiles.length ? '--bare' : '--safe-mode','--setting-sources','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
  '--model','meta-ai-whatsapp'];
 if (!harness.args.some(arg => arg === '--tools' || arg.startsWith('--tools='))) {
  args.push('--tools', editFiles.length ? 'Read,Edit,Bash' : 'Read,Write,Edit,Glob,Grep,Bash');

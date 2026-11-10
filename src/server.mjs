@@ -42,7 +42,10 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
           throw new GatewayError('Supply one to eight distinct absolute edit paths.');
         }
       }
-      const request = prepare(body, maxChars, snapshotContext, editFiles);
+      const compaction = req.headers['x-claude-code-request-class'] === 'compaction';
+      const request = compaction
+        ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars)
+        : prepare(body, maxChars, snapshotContext, editFiles);
       if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       res.on('close', () => {if(!res.writableEnded) controller.abort();});
