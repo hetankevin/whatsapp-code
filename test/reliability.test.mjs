@@ -419,6 +419,24 @@ test('an unchanged failed test gets a repair with the assertion and can rerun af
   assert.equal(run(requested).content[0].name, 'Bash');
 });
 
+test('a local Mocha regression carries its failure through a native Read', () => {
+  const command = "node_modules/.bin/_mocha --reporter dot test.js --grep 'config extends'";
+  const call = {type:'tool_use',name:'Bash',id:'test-one',input:{command}};
+  const tools = [{name:'Bash',input_schema:{type:'object'}}];
+  const messages = [
+    {role:'user',content:'Fix config extensions.'},
+    {role:'assistant',content:[call]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'test-one',is_error:true,
+      content:'Exit code 1\n' + 'Warning: old dependency\n'.repeat(24) +
+        '  0 passing\n  1 failing\n\n  1) Config creates config with extends:\n     TypeError: getConfig'}]},
+    {role:'assistant',content:[{type:'tool_use',name:'Read',id:'r',input:{file_path:'config.js'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'r',content:'1\treturn 1;'}]}
+  ];
+  const request = prepare({tools,messages});
+  assert.throws(() => parseReply(JSON.stringify({request_id:request.requestId,content:[call]}),request),
+    error => error.repairable && error.testFailure.includes('TypeError: getConfig'));
+});
+
 test('encoded indentation survives CRLF framing without changing source characters', () => {
   const request = lineEditRequest();
   const nonce = request.requestId;
@@ -426,6 +444,17 @@ test('encoded indentation survives CRLF framing without changing source characte
   const [edit] = parseReply(reply,request).content;
   assert.equal(edit.input.new_string, 'const a = 1;\n  return "\\\\n";\r\n \tnext();\r\n\n}');
   assert.throws(() => parseReply(reply.replace('st|next','next'),request), /complete protocol/);
+});
+
+test('mixed EDIT indentation markers cannot be written into the source', () => {
+  const request = lineEditRequest();
+  const handle = request.editableReads[0].read_id;
+  assert.match(request.prompt, /EDIT READ_ID START END_LINE INDENT/);
+  const corrupt = 'EDIT ' + handle + ' 8 8\nINDENT\nreturn "mixed";\n2|return "new";\nEND';
+  assert.throws(() => parseReply(corrupt, request, {matchedTurn:true}), /Put INDENT on the EDIT header/);
+  const repaired = 'EDIT ' + handle + ' 8 8 INDENT\n2|return "new";\nEND';
+  const [edit] = parseReply(repaired, request, {matchedTurn:true}).content;
+  assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
 });
 
 test('nested EDIT headers never become source and are unwrapped only for matching metadata', () => {

@@ -7,7 +7,7 @@ export function testCommand(tool) {
   // Only recognize standalone test invocations. Shell pipelines and compound
   // commands can change the workspace, so they clear prior test failures.
   if (/[;&|<>()\x60$\r\n]/.test(command)) return null;
-  return /^(?:node[ \t]+--test|(?:npm|pnpm|yarn)[ \t]+test|pytest|python3?[ \t]+-m[ \t]+pytest)(?:[ \t]|$)/.test(command)
+  return /^(?:node[ \t]+--test|(?:npm|pnpm|yarn)[ \t]+test|(?:\.\/)?node_modules\/\.bin\/_?mocha|mocha|pytest|python3?[ \t]+-m[ \t]+pytest)(?:[ \t]|$)/.test(command)
     ? command
     : null;
 }
@@ -17,7 +17,7 @@ function failureExcerpt(content) {
     ? content.filter(block => block.type === 'text').map(block => block.text).join('\n')
     : '';
   const lines = text.split('\n');
-  const failure = lines.findIndex(line => /^(?:not ok\b|FAIL\b|E\s{2,}|AssertionError\b|# SyntaxError:)/.test(line));
+  const failure = lines.findIndex(line => /^(?:not ok\b|FAIL\b|E\s{2,}|AssertionError\b|# SyntaxError:|[ \t]+\d+\) )/.test(line));
   const hasSyntaxError = lines[failure]?.startsWith('# SyntaxError:');
   const start = Math.max(hasSyntaxError ? failure - 1 : failure, 0);
   return lines.slice(start, start + 16).join('\n').slice(0, 1000);

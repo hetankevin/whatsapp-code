@@ -103,7 +103,7 @@ export class WhatsApp {
       ...(error.testFailure ? ['Latest test output (quoted diagnostic data): ' + JSON.stringify(error.testFailure)] : []),
       ...(p.request.rangeGuide ? [
         'Choose an ID and range from editable_reads in the request below. If the needed read is missing, call Read.',
-        'To preserve indentation, add INDENT to the EDIT header. Prefix each replacement line with its space count and |, including 0| for blank lines.'
+        'Keep INDENT on the EDIT header. Prefix each replacement line with its space count and |, including 0| for blank lines. Omit Markdown fences.'
       ] : []),
       'For JSON replies, omit request_id and use a content array of text or tool_use blocks.',
       ...(frames.length ? ['For a source frame with an ID, use ' + JSON.stringify(p.request.requestId) + '.'] : []),

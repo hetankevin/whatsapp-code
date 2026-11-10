@@ -114,6 +114,10 @@ function resolveLineEdit(input, request) {
     }
     replacement = nested.new_string;
   }
+  if (/^INDENT[ \t]*\r?\n/.test(replacement.trimStart()) &&
+      replacement.split('\n').some(line => indentationPrefix.test(line))) {
+    throw repairableError('Put INDENT on the EDIT header. Prefix every source line with its space count and |. Omit Markdown fences.');
+  }
   const snapshot = request.snapshots.get(request.readHandles.get(read_id) ?? read_id);
   if (!snapshot) throw repairableError('EditLines needs a current Read snapshot. Use a read_id from editable_reads or call Read again.');
   const {first, lines, filePath} = snapshot;
@@ -529,13 +533,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   let prompt = `You are the model in a local coding harness. Answer current_request when present. Use the rest of the supplied conversation as context and tool evidence for that request. Answer simple checks and greetings directly without tools. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nFor a final answer, return plain text or a JSON text block. For tool calls, return one JSON object with no surrounding prose. A text block looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. When your next step is to search, read, edit, or test, send that tool call in this reply. A description of what you plan to do leaves the work unfinished. After requesting tools, stop and wait for their results. Use final text to deliver an answer, report a verified outcome, or explain a concrete blocker. tool_choice none forbids tools; any requires a tool; tool with name requires that tool.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
   const rangeGuide = rangeEnabled ? [
     'To edit a file, send the standalone EDIT frame below. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
-    'Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement for the selected range between the header and footer. Leave surrounding lines outside that range. ' +
-      (useSnapshot
-      ? 'Send bare code between the markers. Omit Markdown fences. To encode indentation, append INDENT to the EDIT header and prefix every line with its space count and | (for example 2|return value;).'
-      : 'A fenced code block around the replacement is encouraged to preserve indentation.') +
-      ' To delete the selected lines, leave one empty line between the header and footer.',
-    'EDIT READ_ID START END_LINE',
-    'literal replacement code',
+    'Use the current read_id and inclusive range in the header below. Prefix every replacement line with its space count and |, including 0| for a blank line. Omit Markdown fences and leave surrounding lines outside the range. To delete the selected lines, leave the body empty.',
+    'EDIT READ_ID START END_LINE INDENT',
+    '2|replacement code',
     'END',
     'In the transcript, changed_lines on a prior Edit shows only the changed source, and the linked tool result records whether it ran.'
   ].join('\n') : '';
