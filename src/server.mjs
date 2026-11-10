@@ -73,8 +73,18 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
           throw new GatewayError('Supply one to eight distinct absolute edit paths.');
         }
       }
-      const compaction = req.headers['x-claude-code-request-class'] === 'compaction';
-      const request = compaction
+      const requestClass = req.headers['x-claude-code-request-class'];
+      if (requestClass === 'auxiliary' && !body?.tools?.length) {
+        const system = Array.isArray(body?.system)
+          ? body.system.map(block => block?.text)
+          : [body?.system];
+        if (system.some(text => typeof text === 'string' &&
+            text.startsWith('A user kicked off a Claude Code agent to do a coding task and walked away.'))) {
+          // Claude Code falls back to its local status heuristic when this side request fails.
+          throw new GatewayError('Use Claude Code’s local notification status fallback.');
+        }
+      }
+      const request = requestClass === 'compaction'
         ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars)
         : prepare(body, maxChars, snapshotContext, editFiles);
       if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);

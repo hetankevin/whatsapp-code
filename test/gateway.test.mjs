@@ -78,6 +78,30 @@ test('HTTP auth, browser isolation, endpoint handling, and SSE tool events',asyn
   assert.equal(events.find(x=>x.type==='message_delta').delta.stop_reason,'tool_use');
  },async r=>parseReply(reply(r,[{type:'tool_use',name:'Read',input:{file_path:'x'}}]),r));
 });
+test('Claude Code notification checks stay local while other requests reach the backend', async () => {
+  const classifier = {
+    tools: [],
+    system: [
+      {type:'text',text:'x-anthropic-billing-header: cc_version=fixture;'},
+      {type:'text',text:'A user kicked off a Claude Code agent to do a coding task and walked away. Classify the session status.'}
+    ]
+  };
+  const headers = {'x-claude-code-request-class':'auxiliary'};
+  let forwarded = 0;
+  await withServer(async base => {
+    const result = await post(base, classifier, headers);
+    assert.equal(result.status, 400);
+    assert.match((await result.json()).error.message, /notification status fallback/);
+    assert.equal(forwarded, 0);
+
+    assert.equal((await post(base, {tools:[],system:'Give the session a title.'}, headers)).status, 200);
+    assert.equal((await post(base, classifier, {'x-claude-code-request-class':'main'})).status, 200);
+    assert.equal(forwarded, 2);
+  }, async request => {
+    forwarded++;
+    return parseReply(reply(request,[{type:'text',text:'ok'}]),request);
+  });
+});
 test('overlapping requests reach WhatsApp in order, even after a backend error', async () => {
   let started, release;
   const begun = new Promise(resolve => { started = resolve; });

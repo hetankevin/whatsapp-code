@@ -537,6 +537,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     'EDIT READ_ID START END_LINE INDENT',
     '2|replacement code',
     'END',
+    'END is the last line of the reply. Wait for Claude Code’s Edit result before requesting another tool or reporting a result.',
     'In the transcript, changed_lines on a prior Edit shows only the changed source, and the linked tool result records whether it ran.'
   ].join('\n') : '';
   const system = content(body.system ?? '');
