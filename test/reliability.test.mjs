@@ -72,6 +72,52 @@ test('a matched final WhatsApp answer can be ordinary text', async () => {
   assert.throws(() => parseReply(answer, {...f.request,editFiles:['/fixture.js']}, {matchedTurn:true}), /protocol JSON/);
 });
 
+test('reply repair covers malformed envelopes and tool arguments without consuming the context budget', async () => {
+  const read = {name:'Read',input_schema:{
+    type:'object',required:['file_path'],properties:{file_path:{type:'string'}}
+  }};
+  const fence = '\x60'.repeat(3);
+  const answer = '[Guide](https://example.invalid)\n\n' + fence + 'js\nlet result = 1;\n' + fence;
+  for (const text of [
+    fence + 'json\n{incomplete',
+    'Proposed edit:\nEDIT nonce toolu_read 1 1\nsource',
+    '{"content":[{"type":"tool_use","name":"Read","input":{"file_path":1}}]}',
+    '{"content":[{"type":"tool_use","name":"Unknown","input":{}}]}',
+    ''
+  ]) {
+    const f = transportFixture([read]);
+    const event = (id, target, text) => ({event:'message',id,target,edit:'last',message:{conversation:text}});
+    await f.w.event(event('bad', 'original', text));
+    assert.equal(f.resolved, undefined);
+    assert.equal(f.writes.length, 1);
+    await f.w.event(event('valid', f.writes[0].id, answer));
+    assert.deepEqual(f.resolved.content, [{type:'text',text:answer}]);
+  }
+
+  const f = transportFixture([read]);
+  f.request.maxChars = f.request.prompt.length + 1200;
+  await f.w.event({event:'message',id:'large',target:'original',edit:'last',
+    message:{conversation:'{"content":' + 'x'.repeat(4000)}});
+  assert.equal(f.writes.length, 1);
+  assert.ok(f.writes[0].prompt.includes(f.request.prompt));
+  assert.ok(f.writes[0].prompt.length <= f.request.maxChars);
+});
+
+test('the current user turn stays visible after prior tasks and tool results', () => {
+  const messages = [
+    {role:'user',content:'Fix the old task.'},
+    {role:'assistant',content:[{type:'text',text:'The old task is in progress.'}]},
+    {role:'user',content:'Explain the new topic.'},
+    {role:'user',content:[{type:'text',text:'<system-reminder>Keep context.</system-reminder>'}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'read',content:'Old file text.'}]}
+  ];
+  const payload = choice => JSON.parse(prepare({messages,tool_choice:{type:choice}}).prompt.split('CURRENT REQUEST:\n')[1]);
+  assert.equal(payload('auto').current_request, 'Explain the new topic.');
+  assert.equal(payload('auto').messages[0].content, 'Fix the old task.');
+  assert.equal(payload('none').current_request, undefined);
+  assert.equal(payload('none').messages[2].content, 'Explain the new topic.');
+});
+
 test('a matched reply without an answer gets one repair', async () => {
   const reply = (id, target, body) => ({
     event:'message', id, target, edit:'full', message:{conversation:JSON.stringify(body)}
@@ -145,10 +191,11 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>
   ];
   const payload = snapshot => JSON.parse(prepare({messages}, 60000, snapshot).prompt.split('CURRENT REQUEST:\n')[1]);
   assert.deepEqual(payload(false).messages, [
-    {role:'user',content:[task, {type:'text',text:custom}]},
+    {role:'user',content:'[See current_request below.]'},
     {role:'assistant',content:[bash]},
     {role:'user',content:[output]}
   ]);
+  assert.deepEqual(payload(false).current_request, [task, {type:'text',text:custom}]);
   assert.deepEqual(payload(true).task, [task, {type:'text',text:custom}]);
 });
 

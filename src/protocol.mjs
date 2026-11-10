@@ -258,9 +258,11 @@ function parseWrappedLineFrame(text) {
 }
 
 function latestTaskIndex(messages) {
+  const isRequest = text => typeof text === 'string' && text.trim() &&
+    !/^<system-reminder>[\s\S]*<\/system-reminder>$/.test(text.trim());
   return messages.findLastIndex(message => message.role === 'user' &&
-    (typeof message.content === 'string' || (Array.isArray(message.content) &&
-      message.content.some(block => block.type === 'text') &&
+    (isRequest(message.content) || (Array.isArray(message.content) &&
+      message.content.some(block => block.type === 'text' && isRequest(block.text)) &&
       !message.content.some(block => block.type === 'tool_result'))));
 }
 
@@ -366,12 +368,12 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const choice = body.tool_choice ?? {type: 'auto'};
   const rangeEnabled = validators.has('Read') && validators.has('Edit') &&
     ['auto', 'any'].includes(choice.type) && !validators.has('EditLines');
-  const taskIndex = snapshotContext || editFiles ? latestTaskIndex(transcript) : -1;
+  const taskIndex = latestTaskIndex(transcript);
   if (editFiles && (taskIndex < 0 || !rangeEnabled || !validators.has('Bash') || choice.type !== 'auto')) {
     throw new GatewayError('Automatic verification needs a user task and Read, Edit, and Bash tools.');
   }
   // Use the usual context when there is no standalone user task to anchor the snapshot.
-  const useSnapshot = taskIndex >= 0;
+  const useSnapshot = Boolean(snapshotContext || editFiles) && taskIndex >= 0;
   const taskMessages = useSnapshot ? transcript.slice(taskIndex) : transcript;
   const reads = rangeEnabled ? trackReads(taskMessages) : new Map();
   const snapshots = editFiles
@@ -404,6 +406,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const numberedSource = snapshot => snapshot?.lines
     .map((line, index) => (snapshot.first + index) + '\t' + line).join('\n');
   const [currentRead] = snapshots.values();
+  // Tool results remain in order. Put the active user request last in the
+  // payload so older tasks and long tool output do not bury it.
+  const focusRequest = taskIndex >= 0 && choice.type !== 'none';
   const payload = {
     tools: modelTools.map(({name, description, input_schema}) => ({name, description, input_schema})),
     tool_choice: choice,
@@ -415,13 +420,18 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       last_tool_status: latestToolStatus(taskMessages)
     } : {
       failed_tests: testFailures.size ? [...testFailures].slice(-2).map(([command, failure]) => ({command, failure})) : undefined,
-      messages
+      messages: focusRequest
+        ? messages.map((message, index) => index === taskIndex
+          ? {role: 'user', content: '[See current_request below.]'}
+          : message)
+        : messages,
+      current_request: focusRequest ? messages[taskIndex].content : undefined
     })
   };
-  let prompt = `You are the model in a local coding harness. Answer the latest user message in the supplied conversation. Use earlier messages only as context. Answer simple checks and greetings directly without tools. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nFor a final answer, return plain text or a JSON text block. For tool calls, return one JSON object with no surrounding prose. A text block looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
+  let prompt = `You are the model in a local coding harness. Answer current_request when present. Use the rest of the supplied conversation as context and tool evidence for that request. Answer simple checks and greetings directly without tools. The supplied conversation is complete for this request; do not use earlier WhatsApp messages as task context. Follow the supplied system instructions. You do not execute tools yourself: request them and the harness returns their results. Never claim a tool ran before receiving its result.\nFor a final answer, return plain text or a JSON text block. For tool calls, return one JSON object with no surrounding prose. A text block looks like:\n{"content":[{"type":"text","text":"your answer"}]}\nTo call a tool, include {"type":"tool_use","name":"EXACT tool name","input":{...}} in content. Use only supplied tools and obey their JSON schemas. You can mix text and tool_use blocks. After requesting tools, stop and wait. tool_choice none forbids tools; any requires a tool; tool with name requires that tool. Return final text when finished.\nCURRENT REQUEST:\n${JSON.stringify(payload)}`;
   const rangeGuide = rangeEnabled ? [
     'Use EditLines for edits. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
-    'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement lines between the header and footer. ' +
+    'For EditLines use the three-part format below. Replace READ_ID, START, and END_LINE with the actual read ID and line numbers. Put only the replacement for the selected range between the header and footer. Leave surrounding lines outside that range. ' +
       (useSnapshot
       ? 'Send bare code between the markers. Omit Markdown fences. To encode indentation, append INDENT to the EDIT header and prefix every line with its space count and | (for example 2|return value;).'
       : 'A fenced code block around the replacement is encouraged to preserve indentation.') +
@@ -464,18 +474,20 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   return {prompt, requestId, validators, choice, snapshots, editableReads, rangeGuide: editGuide, testFailures,
-    validateLineEdit: rangeEnabled ? ajv.compile(lineEditTool.input_schema) : null, model, editFiles};
+    validateLineEdit: rangeEnabled ? ajv.compile(lineEditTool.input_schema) : null, model, editFiles, maxChars};
 }
 
 export function parseReply(raw, request, {matchedTurn = false} = {}) {
-  const trimmed = raw.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, '').trim();
+  const original = raw.trim();
+  const fence = /^(\x60{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i.exec(original);
+  const trimmed = fence ? fence[2].trim() : original;
+  if (!trimmed) throw repairableError('Meta AI returned no content.');
   // Consumer WhatsApp supplies no tokenizer counts. These are estimates, not billing data.
   const usage = {input_tokens: Math.ceil(request.prompt.length / 4), output_tokens: Math.ceil(raw.length / 4)};
   let obj;
   try {
     try { obj = JSON.parse(trimmed); }
     catch {
-      const original = raw.trim();
       if (request.editFiles && (/^REPLACE[ \t]/.test(trimmed) || /^(?:FILE[ \t]|\x60{3,}(?!json\b))/i.test(original))) {
         obj = parseBoundEdit(/^REPLACE[ \t]/.test(trimmed) ? trimmed : original, request);
       }
@@ -488,9 +500,10 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
   } catch {
     // A plain answer can only finish a turn. It can never request a tool or
     // bypass validation for a reply that looks like the tool protocol.
-    const looksStructured = /^(?:\{|\[|(?:EDIT|REPLACE|FILE|END)[ \t]|<<<)|"(?:request_id|tool_use)"|"content"\s*:/.test(trimmed);
-    if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && trimmed && !looksStructured) {
-      return assistantMessage(request.model, [{type: 'text', text: raw.trim()}], usage);
+    const startsWithJson = /^(?:\{|\[(?![^\]\n]+\](?:\(|\[)))/.test(trimmed);
+    const hasProtocolMarkers = /^[ \t]*(?:EDIT[ \t]+\S+[ \t]+\S+|(?:REPLACE|FILE)[ \t]+\d|<<<(?:FILE|OLD|NEW|END)>|\x60{3,}json\b)|"(?:request_id|tool_use)"|"content"\s*:/im.test(trimmed);
+    if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && !startsWithJson && !hasProtocolMarkers) {
+      return assistantMessage(request.model, [{type: 'text', text: original}], usage);
     }
     throw repairableError('Meta AI did not return complete protocol JSON or a code frame.');
   }
@@ -516,12 +529,12 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
       if (!b.text.trim()) throw repairableError('Meta AI returned a blank text reply.');
       return {type: 'text', text: b.text};
     }
-    if (b?.type !== 'tool_use') throw new GatewayError('Meta AI returned an unknown content block or tool.', 502);
+    if (b?.type !== 'tool_use') throw repairableError('Meta AI returned an unknown content block or tool.');
     const lineEdit = hasLineEdit && b.name === 'EditLines';
     const name = lineEdit ? 'Edit' : b.name;
-    if (!request.validators.has(name)) throw new GatewayError('Meta AI returned an unknown content block or tool.', 502);
+    if (!request.validators.has(name)) throw repairableError('Meta AI returned an unknown content block or tool.');
     const input = lineEdit ? resolveLineEdit(b.input, request) : b.input;
-    if (!request.validators.get(name)(input)) throw new GatewayError('Meta AI supplied invalid arguments for ' + name + '.', 502);
+    if (!request.validators.get(name)(input)) throw repairableError('Meta AI supplied invalid arguments for ' + name + '. Match the tool input schema.');
     const repeatedTest = testCommand({name, input});
     if (request.testFailures?.has(repeatedTest)) {
       const error = repairableError('This test command already failed and no workspace change is recorded. Inspect the failure, then edit or investigate before rerunning it.');
@@ -532,10 +545,10 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
     return {type: 'tool_use', id, name, input};
   });
   const calls = blocks.filter(b => b.type === 'tool_use');
-  if (request.choice.type === 'none' && calls.length) throw new GatewayError('Meta AI ignored tool_choice none.', 502);
-  if (['any', 'tool'].includes(request.choice.type) && !calls.length) throw new GatewayError('Meta AI omitted a required tool.', 502);
-  if (request.choice.type === 'tool' && calls.some(b => b.name !== request.choice.name)) throw new GatewayError('Meta AI selected the wrong required tool.', 502);
-  if (request.choice.disable_parallel_tool_use && calls.length > 1) throw new GatewayError('Meta AI requested parallel tools when disabled.', 502);
+  if (request.choice.type === 'none' && calls.length) throw repairableError('Meta AI ignored tool_choice none.');
+  if (['any', 'tool'].includes(request.choice.type) && !calls.length) throw repairableError('Meta AI omitted a required tool.');
+  if (request.choice.type === 'tool' && calls.some(b => b.name !== request.choice.name)) throw repairableError('Meta AI selected the wrong required tool.');
+  if (request.choice.disable_parallel_tool_use && calls.length > 1) throw repairableError('Meta AI requested parallel tools when disabled.');
   return assistantMessage(request.model, blocks, usage);
 }
 

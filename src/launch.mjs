@@ -40,7 +40,8 @@ env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = '1';
 const args=[editFiles.length ? '--bare' : '--safe-mode','--setting-sources','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
  '--settings', JSON.stringify({
    attribution: {commit: '', pr: '', sessionUrl: false},
-   includeGitInstructions: false
+   includeGitInstructions: false,
+   awaySummaryEnabled: false
  }),
  '--model','meta-ai-whatsapp'];
 if (!harness.args.some(arg => arg === '--tools' || arg.startsWith('--tools='))) {

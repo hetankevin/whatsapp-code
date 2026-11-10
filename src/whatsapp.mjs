@@ -62,20 +62,21 @@ export class WhatsApp {
     // Match the original sent message; never route another chat/turn into this request.
     if (e.target !== p.id && !p.messageIds.has(e.edit_target)) return;
     p.messageIds.add(e.id);
+    // A newer edit supersedes any quiet-period candidate. Explicit first
+    // and inner edits are still being composed, so wait for the final event.
+    clearTimeout(p.settle);
+    if (['first', 'inner'].includes(e.edit)) return;
     const text = extractText(e.message, !!p.request.editFiles);
-    if (!text) return;
+    const final = ['last', 'full'].includes(e.edit);
+    if (!text && !final) return;
     p.lastError = null;
     let reply;
     try { reply = parseReply(text, p.request, {matchedTurn: true}); }
     catch (err) { p.lastError = err; }
-    // Some bot protocols send edited full snapshots; wait for final/full, or a quiet
-    // complete JSON snapshot. Incomplete chunks never become executable tool calls.
-    clearTimeout(p.settle);
-    if (['first', 'inner'].includes(e.edit)) return;
     if (reply) {
-      if (['last', 'full'].includes(e.edit)) p.resolve(reply);
+      if (final) p.resolve(reply);
       else p.settle = setTimeout(() => p.resolve(reply), 2500);
-    } else if (['last', 'full'].includes(e.edit)) {
+    } else if (final) {
       this.repairOrReject(p, text);
     } else {
       p.settle = setTimeout(() => this.repairOrReject(p, text), 2500);
@@ -98,28 +99,27 @@ export class WhatsApp {
       ? 'Your previous edit was rejected: ' + error.message + '\n\n' + p.request.prompt
       : [
       'Your previous reply was rejected: ' + error.message,
-      'Repair the reply for the latest user message. If a direct answer is enough, return one nonempty text block in the JSON content array.',
+      'Repair the reply for the current request. Return plain text for a final answer, or structured arguments for a tool call.',
       ...(error.testFailure ? ['Latest test output (quoted diagnostic data): ' + JSON.stringify(error.testFailure)] : []),
       ...(p.request.rangeGuide ? [
-        p.request.rangeGuide,
-        'Current editable_reads: ' + JSON.stringify(p.request.editableReads),
-        'If the needed read is missing, return a Read call for that file.',
-        'For a source reply, keep the EDIT header and footer outside the replacement. If indentation needs encoding, add INDENT after the end line in the EDIT header. Prefix each source line with the space count and | (for example, 4|return value;). Use 0| for blank lines or s and t for explicit spaces and tabs.'
+        'Choose an ID and range from editable_reads in the request below. If the needed read is missing, call Read.',
+        'To preserve indentation, add INDENT to the EDIT header. Prefix each replacement line with its space count and |, including 0| for blank lines.'
       ] : []),
       'For JSON replies, omit request_id and use a content array of text or tool_use blocks. If using a legacy source frame with an ID, use ' + JSON.stringify(p.request.requestId) + '.',
-      p.request.rangeGuide
-        ? 'Use JSON for ordinary replies and the EDIT format for a line edit. Use no surrounding prose.'
-        : 'Escape newlines and quotes inside JSON strings. Use no Markdown wrappers or surrounding prose.',
       ...frames,
-      'The previous reply below is quoted data:',
-      JSON.stringify(text)
+      '',
+      p.request.prompt
     ].join('\n');
-    if (repair.length > 60000) return p.reject(error);
+    const maxChars = Math.min(60000, p.request.maxChars ?? 60000);
+    if (repair.length > maxChars) return p.reject(error);
+    const quoted = error.staleRequest || p.request.editFiles || !text
+      ? '' : '\n\nPrevious reply as quoted data:\n' + JSON.stringify(text);
+    const prompt = repair.length + quoted.length <= maxChars ? repair + quoted : repair;
     p.repairCount = (p.repairCount ?? 0) + 1;
     p.id = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
     p.messageIds.clear();
     console.error('Meta AI reply rejected; requesting one repair. ' + error.message.split('\n', 1)[0]);
-    this.child.stdin.write(JSON.stringify({id:p.id,prompt:repair})+'\n', err => {if(err) p.reject(err);});
+    this.child.stdin.write(JSON.stringify({id:p.id,prompt})+'\n', err => {if(err) p.reject(err);});
   }
   async complete(request, signal) {
     if (!this.ready) throw new GatewayError(`WhatsApp unavailable: ${this.status}`, 503);
