@@ -55,7 +55,7 @@ const server = createGateway({
       if (!searched) {
         searched = true;
         assert.match(request.prompt, /fragment-0\.txt/);
-        return tool('Grep', {pattern: 'Example source fixture 0', path: sources});
+        return tool('Grep', {pattern: 'Example source fixture 0', path: sources, glob: '*.missing'});
       }
       if (!readCount) assert.match(request.prompt, /fragment-0\.txt/);
       if (readCount < 24) {
@@ -96,13 +96,26 @@ try {
   assert.equal(result.permission_denials.length, 0);
   const calls = new Map();
   const succeeded = new Set();
+  let broadened = false;
   for (const event of events) {
     for (const block of event.message?.content ?? []) {
-      if (block.type === 'tool_use') calls.set(block.id, block.name);
+      if (block.type === 'tool_use') {
+        calls.set(block.id, block.name);
+        if (block.id.startsWith('toolu_grep_retry_')) {
+          assert.equal(block.name, 'Grep');
+          assert.deepEqual(block.input, {pattern: 'Example source fixture 0', path: sources});
+        }
+      }
+      if (block.type === 'tool_result' && block.tool_use_id.startsWith('toolu_grep_retry_')) {
+        assert.equal(Boolean(block.is_error), false);
+        assert.match(JSON.stringify(block.content), /fragment-0\.txt/);
+        broadened = true;
+      }
       if (block.type === 'tool_result' && !block.is_error) succeeded.add(calls.get(block.tool_use_id));
     }
   }
   assert.ok(succeeded.has('Glob') && succeeded.has('Grep'));
+  assert.ok(broadened, 'Claude Code should execute the broader Grep and return its match');
   assert.ok(compactions >= 2 && resumed >= 2);
   console.log('PASS: Claude Code used native Glob and Grep and completed 24 reads across ' + compactions + ' native compactions.');
 } finally {

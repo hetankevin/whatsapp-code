@@ -339,6 +339,29 @@ function latestToolStatus(messages) {
   });
 }
 
+function retryGrepWithoutGlob(messages, validate, model) {
+  if (!validate) return;
+  const [previous, latest] = messages.slice(-2);
+  if (previous?.role !== 'assistant' || !Array.isArray(previous.content) ||
+      latest?.role !== 'user' || !Array.isArray(latest.content) || latest.content.length !== 1) return;
+  const calls = previous.content.filter(block => block.type === 'tool_use');
+  const [call] = calls;
+  const [result] = latest.content;
+  if (calls.length !== 1 || call.name !== 'Grep' || typeof call.input?.glob !== 'string' ||
+      !call.input.glob || result.type !== 'tool_result' || result.tool_use_id !== call.id || result.is_error) return;
+
+  const content = result.content;
+  const output = Array.isArray(content) && content.length === 1 && content[0]?.type === 'text'
+    ? content[0].text : content;
+  if (typeof output !== 'string' || !['No matches found', 'No files found'].includes(output.trim())) return;
+
+  const {glob, ...input} = call.input;
+  if (!validate(input)) return;
+  return assistantMessage(model, [{
+    type:'tool_use', id:'toolu_grep_retry_' + randomBytes(12).toString('hex'), name:'Grep', input
+  }]);
+}
+
 // Reconstruct the edit loop from Claude Code's tool results on every turn.
 function nextEditStep(messages, validators, editFiles, model) {
   const test = {name: 'Bash', input: {command: 'node --test', description: 'Run project tests'}};
@@ -457,6 +480,10 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined, snapshots)};
   });
   const model = body.model ?? 'meta-ai-whatsapp';
+  if (choice.type === 'auto' && !editFiles) {
+    const localResult = retryGrepWithoutGlob(transcript, validators.get('Grep'), model);
+    if (localResult) return {localResult};
+  }
   if (editFiles) {
     const localResult = nextEditStep(taskMessages, validators, editFiles, model);
     if (localResult) return {localResult};

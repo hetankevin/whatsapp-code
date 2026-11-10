@@ -199,6 +199,27 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>
   assert.deepEqual(payload(true).task, [task, {type:'text',text:custom}]);
 });
 
+test('a failed filtered Grep gets one native retry with the original scope', () => {
+  const tools = [{name:'Grep',input_schema:{type:'object',required:['pattern','path']}}];
+  const input = {pattern:'baseConfig',path:'lib',glob:'*_/_.js',output_mode:'content'};
+  const call = {type:'tool_use',id:'original-search',name:'Grep',input};
+  const result = {type:'tool_result',tool_use_id:call.id,content:[{type:'text',text:'No matches found'}]};
+  const user = block => ({role:'user',content:[block]});
+  const assistant = block => ({role:'assistant',content:[block]});
+  const messages = [{role:'user',content:'Find the relevant config.'}, assistant(call), user(result)];
+  const [retry] = prepare({tools,messages}).localResult.content;
+  assert.equal(retry.name,'Grep');
+  assert.deepEqual(retry.input,{pattern:'baseConfig',path:'lib',output_mode:'content'});
+  assert.equal(call.input.glob,'*_/_.js');
+  assert.equal(prepare({tools,messages:[...messages, assistant(retry), user({
+    ...result,tool_use_id:retry.id
+  })]}).localResult, undefined);
+  assert.equal(prepare({tools,messages:[...messages.slice(0,-1),user({
+    ...result,is_error:true
+  })]}).localResult, undefined);
+  assert.equal(prepare({tools,messages,tool_choice:{type:'none'}}).localResult, undefined);
+});
+
 test('only numbered Read results lose their display prefixes', () => {
   const numbered = '7\tfunction value() {\n8\t\treturn "a";\n9\t}\n';
   const read = {type:'tool_use', id:'read', name:'Read', input:{file_path:'a.js'}};
