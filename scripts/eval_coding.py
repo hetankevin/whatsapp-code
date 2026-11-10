@@ -60,7 +60,7 @@ assert.equal(c.get('missing'),undefined);
 ''',
     },
     "csv": {
-        "task": "Implement parseCSV with comma-separated fields, quoted commas, doubled quote escapes, CRLF or LF row endings, and newlines inside quoted fields. Preserve empty fields, including a standalone quoted empty field as one row with one empty string and a delimiter-only row such as two commas as three empty fields. Omit the extra row after a final newline. Empty input returns []; an unclosed quoted field throws. Keep the existing named export and add no dependencies. Inspect project instructions, implement the feature, and run tests.",
+        "task": "Implement parseCSV with comma-separated fields, quoted commas, doubled quote escapes, CRLF or LF row endings, and newlines inside quoted fields. Preserve empty fields, including a standalone quoted empty field as one row with one empty string and a delimiter-only row such as two commas as three empty fields. Preserve spaces in unquoted fields. Omit the extra row after a final newline. Empty input returns []; an unclosed quoted field throws. Keep the existing named export and add no dependencies. Inspect project instructions, implement the feature, and run tests.",
         "module": "csv.mjs",
         "source": '''export function parseCSV(text) {
   return text.split('\\n').map(line => line.split(','));
@@ -75,6 +75,7 @@ test('escaped quotes',()=>assert.deepEqual(parseCSV('"say ""hi""",x'),[['say "hi
 test('final newline',()=>assert.deepEqual(parseCSV('a,b\\n'),[['a','b']]));
 test('standalone quoted empty field',()=>assert.deepEqual(parseCSV('""'),[['']]));
 test('delimiter-only row',()=>assert.deepEqual(parseCSV(',,'),[['','','']]));
+test('spaces in unquoted fields',()=>assert.deepEqual(parseCSV('a b,c'),[['a b','c']]));
 ''',
         "judge": '''const {parseCSV} = await import(MODULE);
 assert.deepEqual(parseCSV(''),[]);

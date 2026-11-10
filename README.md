@@ -116,3 +116,5 @@ The CSV fixture now requires a standalone quoted empty field in the visible test
 In the first live snapshot-mode CSV run, all visible tests passed, including the standalone quoted empty field. The held-out suite failed because the patch dropped a delimiter-only row. A retry with explicit fence-free edits and better syntax-error feedback ended on an undecodable reply before editing. Neither run met the full pass criteria.
 
 With automatic verification and source-only proposals, a live CSV run passed all six visible tests and the held-out checks in 20.7 seconds. The first edit passed the quoted-empty test and failed the delimiter-only test. The harness supplied the failure and fresh source, and the second edit passed. A separate probe found the generated parser dropped unquoted whitespace.
+
+The next run added a visible regression for spaces in unquoted fields and kept the quoted-empty and delimiter-only tests. The same automatic verification harness passed all seven visible tests and the held-out suite in 20.0 seconds.
