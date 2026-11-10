@@ -78,6 +78,35 @@ test('stale IDs get one fresh prompt and ID-free calls still require a matched W
   assert.match(repeated.rejected.message, /does not match/);
 });
 
+test('old sessions omit the stock attribution reminder and keep other context', () => {
+  const stock = `<system-reminder>
+Attribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a previous copy of this reminder; the user's own instructions about these lines, such as a CLAUDE.md or memory rule, take precedence over this reminder, but do not add attribution lines this reminder leaves out):
+- End git commit messages with:
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+- End pull request descriptions with:
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+</system-reminder>
+`;
+  const custom = '<system-reminder>Use the repository commit conventions.</system-reminder>';
+  const task = {type:'text',text:'Fix the bug.'};
+  const reminder = {type:'text',text:stock};
+  const bash = {type:'tool_use',id:'bash',name:'Bash',input:{command:'example'}};
+  const output = {type:'tool_result',tool_use_id:'bash',is_error:false,content:stock};
+  const messages = [
+    {role:'user',content:[task, reminder, {type:'text',text:custom}]},
+    {role:'assistant',content:[bash]},
+    {role:'user',content:[output]},
+    {role:'user',content:[reminder]}
+  ];
+  const payload = snapshot => JSON.parse(prepare({messages}, 60000, snapshot).prompt.split('CURRENT REQUEST:\n')[1]);
+  assert.deepEqual(payload(false).messages, [
+    {role:'user',content:[task, {type:'text',text:custom}]},
+    {role:'assistant',content:[bash]},
+    {role:'user',content:[output]}
+  ]);
+  assert.deepEqual(payload(true).task, [task, {type:'text',text:custom}]);
+});
+
 test('only numbered Read results lose their display prefixes', () => {
   const numbered = '7\tfunction value() {\n8\t\treturn "a";\n9\t}\n';
   const read = {type:'tool_use', id:'read', name:'Read', input:{file_path:'a.js'}};

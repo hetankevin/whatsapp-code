@@ -38,6 +38,10 @@ env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = '1';
 // A compact prompt and core tools keep the request within one WhatsApp message.
 // Permissions stay with Claude Code. No bypass flags or global settings edits.
 const args=[editFiles.length ? '--bare' : '--safe-mode','--setting-sources','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
+ '--settings', JSON.stringify({
+   attribution: {commit: '', pr: '', sessionUrl: false},
+   includeGitInstructions: false
+ }),
  '--model','meta-ai-whatsapp'];
 if (!harness.args.some(arg => arg === '--tools' || arg.startsWith('--tools='))) {
  args.push('--tools', editFiles.length ? 'Read,Edit,Bash' : 'Read,Write,Edit,Glob,Grep,Bash');

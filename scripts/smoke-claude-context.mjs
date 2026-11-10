@@ -14,6 +14,7 @@ const sources = path.join(dir, 'src');
 await mkdir(state);
 await mkdir(sources);
 await writeFile(path.join(state, 'gateway-token'), 'test-key');
+await writeFile(path.join(dir, 'CLAUDE.md'), 'Keep the fixture repository instructions in context.');
 for (let i = 0; i < 24; i++) {
   const source = Array.from({length: 70}, (_, line) => 'Example source fixture ' + i + ' line ' + line + ' for context tests.');
   await writeFile(path.join(sources, 'fragment-' + i + '.txt'), source.join('\n') + '\n');
@@ -33,6 +34,7 @@ const server = createGateway({
     ready: true,
     status: 'mock test',
     complete: async request => {
+      assert.doesNotMatch(request.prompt, /Attribution for git commits and pull requests|Co-Authored-By: Claude Code|Generated with \[Claude Code\]/);
       const reply = block => parseReply(JSON.stringify({request_id: request.requestId, content: [block]}), request);
       const tool = (name, input) => reply({type: 'tool_use', name, input});
       if (requestClass === 'compaction') {
@@ -45,6 +47,7 @@ const server = createGateway({
         resumed++;
       }
       if (!discovered) {
+        assert.match(request.prompt, /Keep the fixture repository instructions in context/);
         discovered = true;
         assert.ok(request.validators.has('Glob') && request.validators.has('Grep'));
         return tool('Glob', {pattern: 'src/*.txt'});

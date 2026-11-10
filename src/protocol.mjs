@@ -323,8 +323,32 @@ function assistantMessage(model, blocks, usage = {input_tokens: 0, output_tokens
   };
 }
 
+// Older Claude Code sessions can replay this block even with attribution disabled.
+const stockAttribution = [
+  '<system-reminder>',
+  "Attribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a previous copy of this reminder; the user's own instructions about these lines, such as a CLAUDE.md or memory rule, take precedence over this reminder, but do not add attribution lines this reminder leaves out):",
+  '- End git commit messages with:',
+  'Co-Authored-By: Claude Code <noreply@anthropic.com>',
+  '- End pull request descriptions with:',
+  '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+  '</system-reminder>'
+].join('\n');
+
+function withoutStockAttribution(messages) {
+  return messages.flatMap(message => {
+    if (message.role !== 'user' || !Array.isArray(message.content)) return [message];
+    const content = message.content.filter(block =>
+      block.type !== 'text' || typeof block.text !== 'string' || block.text.trim() !== stockAttribution
+    );
+    if (content.length === message.content.length) return [message];
+    return content.length ? [{...message, content}] : [];
+  });
+}
+
 export function prepare(body, maxChars = 60000, snapshotContext = false, editFiles) {
   if (!Array.isArray(body.messages) || !body.messages.length) throw new GatewayError('messages must be a nonempty array.');
+  const transcript = withoutStockAttribution(body.messages);
+  if (!transcript.length) throw new GatewayError('messages must contain a user task or conversation.');
   if (body.thinking && body.thinking.type !== 'disabled') throw new GatewayError('Extended thinking is unavailable. Set MAX_THINKING_TOKENS=0.');
   if (body.output_config?.format || body.output_format) throw new GatewayError('Structured output API options are unsupported.');
   const tools = body.tools ?? [];
@@ -342,13 +366,13 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const choice = body.tool_choice ?? {type: 'auto'};
   const rangeEnabled = validators.has('Read') && validators.has('Edit') &&
     ['auto', 'any'].includes(choice.type) && !validators.has('EditLines');
-  const taskIndex = snapshotContext || editFiles ? latestTaskIndex(body.messages) : -1;
+  const taskIndex = snapshotContext || editFiles ? latestTaskIndex(transcript) : -1;
   if (editFiles && (taskIndex < 0 || !rangeEnabled || !validators.has('Bash') || choice.type !== 'auto')) {
     throw new GatewayError('Automatic verification needs a user task and Read, Edit, and Bash tools.');
   }
   // Use the usual context when there is no standalone user task to anchor the snapshot.
   const useSnapshot = taskIndex >= 0;
-  const taskMessages = useSnapshot ? body.messages.slice(taskIndex) : body.messages;
+  const taskMessages = useSnapshot ? transcript.slice(taskIndex) : transcript;
   const reads = rangeEnabled ? trackReads(taskMessages) : new Map();
   const snapshots = editFiles
     ? new Map([...reads].filter(([, snapshot]) => editFiles.includes(snapshot.filePath)))
@@ -359,7 +383,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const {failures, latestFailure} = testState(taskMessages);
   const testFailures = choice.type === 'auto' ? failures : new Map();
   const readIds = new Set();
-  const messages = body.messages.map(m => {
+  const messages = transcript.map(m => {
     if (!['user', 'assistant', 'system'].includes(m.role)) throw new GatewayError('Invalid message role.');
     if (m.role === 'assistant' && Array.isArray(m.content)) {
       for (const block of m.content) {
