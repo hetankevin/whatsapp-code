@@ -17,6 +17,7 @@ await writeFile(path.join(state, 'gateway-token'), 'test-key');
 await writeFile(path.join(dir, 'CLAUDE.md'), 'Keep the fixture repository instructions in context.');
 for (let i = 0; i < 24; i++) {
   const source = Array.from({length: 70}, (_, line) => 'Example source fixture ' + i + ' line ' + line + ' for context tests.');
+  if (i === 0) source[0] += ' fixtureNeedle';
   await writeFile(path.join(sources, 'fragment-' + i + '.txt'), source.join('\n') + '\n');
 }
 
@@ -55,7 +56,7 @@ const server = createGateway({
       if (!searched) {
         searched = true;
         assert.match(request.prompt, /fragment-0\.txt/);
-        return tool('Grep', {pattern: 'Example source fixture 0', path: sources, glob: '*.missing'});
+        return tool('Grep', {pattern: 'fixtureNeedle.*missing', path: sources, glob: '*.missing'});
       }
       if (!readCount) assert.match(request.prompt, /fragment-0\.txt/);
       if (readCount < 24) {
@@ -103,10 +104,14 @@ try {
         calls.set(block.id, block.name);
         if (block.id.startsWith('toolu_grep_retry_')) {
           assert.equal(block.name, 'Grep');
-          assert.deepEqual(block.input, {pattern: 'Example source fixture 0', path: sources});
+          assert.deepEqual(block.input, {pattern: 'fixtureNeedle.*missing', path: sources});
         }
       }
-      if (block.type === 'tool_result' && block.tool_use_id.startsWith('toolu_grep_retry_')) {
+      if (block.type === 'tool_use' && block.id.startsWith('toolu_grep_literal_')) {
+        assert.equal(block.name, 'Grep');
+        assert.deepEqual(block.input, {pattern: 'fixtureNeedle', path: sources});
+      }
+      if (block.type === 'tool_result' && block.tool_use_id.startsWith('toolu_grep_literal_')) {
         assert.equal(Boolean(block.is_error), false);
         assert.match(JSON.stringify(block.content), /fragment-0\.txt/);
         broadened = true;
@@ -115,7 +120,7 @@ try {
     }
   }
   assert.ok(succeeded.has('Glob') && succeeded.has('Grep'));
-  assert.ok(broadened, 'Claude Code should execute the broader Grep and return its match');
+  assert.ok(broadened, 'Claude Code should execute the literal Grep and return its match');
   assert.ok(compactions >= 2 && resumed >= 2);
   console.log('PASS: Claude Code used native Glob and Grep and completed 24 reads across ' + compactions + ' native compactions.');
 } finally {

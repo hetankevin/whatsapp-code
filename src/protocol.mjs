@@ -339,7 +339,7 @@ function latestToolStatus(messages) {
   });
 }
 
-function retryGrepWithoutGlob(messages, validate, model) {
+function retryEmptyGrep(messages, validate, model) {
   if (!validate) return;
   const [previous, latest] = messages.slice(-2);
   if (previous?.role !== 'assistant' || !Array.isArray(previous.content) ||
@@ -347,8 +347,8 @@ function retryGrepWithoutGlob(messages, validate, model) {
   const calls = previous.content.filter(block => block.type === 'tool_use');
   const [call] = calls;
   const [result] = latest.content;
-  if (calls.length !== 1 || call.name !== 'Grep' || typeof call.input?.glob !== 'string' ||
-      !call.input.glob || result.type !== 'tool_result' || result.tool_use_id !== call.id || result.is_error) return;
+  if (calls.length !== 1 || call.name !== 'Grep' || typeof call.input?.pattern !== 'string' ||
+      result.type !== 'tool_result' || result.tool_use_id !== call.id || result.is_error) return;
 
   const content = result.content;
   const output = Array.isArray(content) && content.length === 1 && content[0]?.type === 'text'
@@ -356,9 +356,17 @@ function retryGrepWithoutGlob(messages, validate, model) {
   if (typeof output !== 'string' || !['No matches found', 'No files found'].includes(output.trim())) return;
 
   const {glob, ...input} = call.input;
+  let retry = 'toolu_grep_retry_';
+  if (!glob) {
+    if (!call.id.startsWith(retry)) return;
+    const literal = /^\^?([A-Za-z_][A-Za-z0-9_]*)/.exec(input.pattern)?.[1];
+    if (!literal || literal === input.pattern) return;
+    input.pattern = literal;
+    retry = 'toolu_grep_literal_';
+  }
   if (!validate(input)) return;
   return assistantMessage(model, [{
-    type:'tool_use', id:'toolu_grep_retry_' + randomBytes(12).toString('hex'), name:'Grep', input
+    type:'tool_use', id:retry + randomBytes(12).toString('hex'), name:'Grep', input
   }]);
 }
 
@@ -481,7 +489,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   });
   const model = body.model ?? 'meta-ai-whatsapp';
   if (choice.type === 'auto' && !editFiles) {
-    const localResult = retryGrepWithoutGlob(transcript, validators.get('Grep'), model);
+    const localResult = retryEmptyGrep(transcript, validators.get('Grep'), model);
     if (localResult) return {localResult};
   }
   if (editFiles) {

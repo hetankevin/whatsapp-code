@@ -220,6 +220,20 @@ test('a failed filtered Grep gets one native retry with the original scope', () 
   assert.equal(prepare({tools,messages,tool_choice:{type:'none'}}).localResult, undefined);
 });
 
+test('an empty glob-free retry falls back to a leading literal once', () => {
+  const tools = [{name:'Grep',input_schema:{type:'object',required:['pattern','path']}}];
+  const call = {type:'tool_use',id:'toolu_grep_retry_fixture',name:'Grep',
+    input:{pattern:'baseConfig.*extends',path:'lib',head_limit:10}};
+  const noMatch = id => ({role:'user',content:[{type:'tool_result',tool_use_id:id,content:'No matches found'}]});
+  const messages = [{role:'assistant',content:[call]}, noMatch(call.id)];
+  const [literal] = prepare({tools,messages}).localResult.content;
+  assert.match(literal.id, /^toolu_grep_literal_/);
+  assert.deepEqual(literal.input,{pattern:'baseConfig',path:'lib',head_limit:10});
+  assert.equal(prepare({tools,messages:[
+    ...messages,{role:'assistant',content:[literal]},noMatch(literal.id)
+  ]}).localResult, undefined);
+});
+
 test('only numbered Read results lose their display prefixes', () => {
   const numbered = '7\tfunction value() {\n8\t\treturn "a";\n9\t}\n';
   const read = {type:'tool_use', id:'read', name:'Read', input:{file_path:'a.js'}};
