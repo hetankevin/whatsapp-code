@@ -76,14 +76,20 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       const editOptions = {};
       const testHeader = req.headers['x-wa-test-command'];
       const rangesHeader = req.headers['x-wa-edit-ranges'];
+      const projectHeader = req.headers['x-wa-project-root'];
       if (testHeader || rangesHeader) {
         if (rangesHeader && !editFiles) throw new GatewayError('Read ranges require edit targets.');
         try {
           if (testHeader) editOptions.command = decodeURIComponent(testHeader).trim();
+          if (testHeader && projectHeader) editOptions.projectRoot = decodeURIComponent(projectHeader);
           if (rangesHeader) editOptions.ranges = JSON.parse(decodeURIComponent(rangesHeader));
         } catch { throw new GatewayError('Invalid verification settings.'); }
         if (testHeader && (!editOptions.command || /[\x00-\x1f]/.test(editOptions.command))) {
           throw new GatewayError('Supply a single-line test command.');
+        }
+        if (editOptions.projectRoot !== undefined && (!path.isAbsolute(editOptions.projectRoot) ||
+            /[\x00-\x1f]/.test(editOptions.projectRoot) || path.normalize(editOptions.projectRoot) !== editOptions.projectRoot)) {
+          throw new GatewayError('Supply a normalized absolute project root.');
         }
         if (rangesHeader && (!Array.isArray(editOptions.ranges) || editOptions.ranges.length !== editFiles.length ||
             editOptions.ranges.some(range => range !== null && (!Array.isArray(range) || range.length !== 2 ||

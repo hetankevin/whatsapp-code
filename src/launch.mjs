@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { stateDir } from './server.mjs';
 import { compact, coding, parseHarnessArgs } from './prompts.mjs';
@@ -36,7 +36,10 @@ if (editFiles.length) {
  headers.push('x-wa-edit-files: ' + encodeURIComponent(JSON.stringify(editFiles)));
  if (process.env.WA_EDIT_RANGES) headers.push('x-wa-edit-ranges: ' + encodeURIComponent(process.env.WA_EDIT_RANGES));
 }
-if (process.env.WA_TEST_COMMAND) headers.push('x-wa-test-command: ' + encodeURIComponent(process.env.WA_TEST_COMMAND));
+if (process.env.WA_TEST_COMMAND) {
+ headers.push('x-wa-test-command: ' + encodeURIComponent(process.env.WA_TEST_COMMAND));
+ headers.push('x-wa-project-root: ' + encodeURIComponent(await realpath(process.cwd())));
+}
 if (headers.length) env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
 if (!editFiles.length) {
  // Leave space for Claude Code's own compaction request below the WhatsApp cap.

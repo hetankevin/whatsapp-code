@@ -41,6 +41,13 @@ test('matched replies can carry a read-only call after an explanation', () => {
  assert.throws(()=>parseReply('EDIT invalid frame\n'+text,r,{matchedTurn:true}), /complete protocol/);
  assert.throws(()=>parseReply(prefix+JSON.stringify({content:[call,{...call,name:'Bash'}]}),r,
    {matchedTurn:true}), /complete protocol/);
+ const direct = JSON.stringify([{...call,id:'toolu_supplied_by_bot'}]);
+ const [read] = parseReply(direct,r,{matchedTurn:true}).content;
+ assert.equal(read.name,'Read');
+ assert.notEqual(read.id,'toolu_supplied_by_bot');
+ assert.throws(()=>parseReply(direct,r), /does not match/);
+ assert.throws(()=>parseReply(JSON.stringify([call,{...call,name:'Bash'}]),r,{matchedTurn:true}), /no content/);
+ assert.throws(()=>parseReply(direct.replace('"example.txt"','42'),r,{matchedTurn:true}), /invalid arguments/);
 });
 test('required tool selection and no-tools are enforced',()=>{
  const b=body(); b.tool_choice={type:'none'};let r=prepare(b);
@@ -90,6 +97,7 @@ test('HTTP auth, browser isolation, endpoint handling, and SSE tool events',asyn
  await withServer(async base=>{
   assert.equal((await post(base,{}, {'x-api-key':'bad'})).status,401);
   assert.equal((await post(base,{}, {origin:'https://example.com'})).status,403);
+  assert.equal((await post(base,{}, {'x-wa-test-command':'npm%20test','x-wa-project-root':'%2Fsrc%2F..%2Frepo'})).status,400);
   assert.equal((await fetch(base+'/v1/messages/count_tokens',{method:'POST',headers:{'x-api-key':'test-key'}})).status,404);
   const res=await post(base,{stream:true});assert.equal(res.status,200);
   const events=(await res.text()).split('\n\n').filter(Boolean).map(x=>JSON.parse(x.split('\ndata: ')[1]));

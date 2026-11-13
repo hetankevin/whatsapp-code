@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import path from 'node:path';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { testState, testCommand } from './failed-tests.mjs';
@@ -403,7 +404,7 @@ function retryEmptyGrep(messages, validate, model) {
 
 // A failing native test can identify the relevant implementation without
 // asking the model to copy paths and line numbers out of the stack trace.
-function readFailedTestFrames(messages, validate, model, singleTool, command) {
+function readFailedTestFrames(messages, validate, model, singleTool, {command, projectRoot}) {
   if (!validate) return;
   const statuses = latestToolStatus(messages, command);
   if (statuses?.length !== 1) return;
@@ -418,8 +419,9 @@ function readFailedTestFrames(messages, validate, model, singleTool, command) {
   const distantFrames = [];
   const maxFiles = singleTool ? 1 : 3;
   const framePattern = /^(?:[ \t]+at[ \t]+(?:[^\n(]+\()?|(?=\/))((?:\.{1,2}\/|\/)?[\w./@+-]+\.[cm]?[jt]sx?):(\d+)(?::\d+)?\)?[ \t]*$/gm;
-  for (const [, file, lineText] of output.matchAll(framePattern)) {
-    if (file.startsWith('/') || file.split('/').includes('..') ||
+  for (const [, framePath, lineText] of output.matchAll(framePattern)) {
+    const file = path.isAbsolute(framePath) && projectRoot ? path.relative(projectRoot, framePath) : framePath;
+    if (!file || path.isAbsolute(file) || file.split('/').includes('..') ||
         /(?:^|\/)(?:node_modules|tests?|__tests__)(?:\/|$)/.test(file) ||
         /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)) continue;
     const line = Number(lineText);
@@ -478,8 +480,13 @@ function verifyDiscoveredEdits(messages, validators, model, command) {
   if (latest?.length === 1 && last.command === command && last.status === 'succeeded') {
     return assistantMessage(model, [{type:'text',text:'The harness ran ' + command + ' successfully.'}]);
   }
-  if (!latest?.some(result =>
-      ['Edit','Write','MultiEdit'].includes(result.tool) && result.status === 'succeeded')) return;
+  const changed = latest?.some(result =>
+    ['Edit','Write','MultiEdit'].includes(result.tool) && result.status === 'succeeded');
+  const investigated = latest?.some(result => READ_ONLY_TOOLS.has(result.tool) && result.status === 'succeeded');
+  const alreadyTested = messages.some(message => message.role === 'assistant' &&
+    Array.isArray(message.content) && message.content.some(call => call.type === 'tool_use' &&
+      testCommand(call, command) === command));
+  if (!changed && (!investigated || alreadyTested)) return;
   const input = {command, description:'Run project tests'};
   if (!validators.get('Bash')(input)) return;
   return assistantMessage(model, [{
@@ -623,10 +630,10 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   if (choice.type === 'auto' && !editFiles) {
     const verificationMessages = taskIndex < 0 ? [] : transcript.slice(taskIndex)
       .filter(message => message.role !== 'system');
-    const localResult = verifyDiscoveredEdits(verificationMessages, validators, model, editOptions.command) ??
-      retryEmptyGrep(transcript, validators.get('Grep'), model) ??
+    const localResult = retryEmptyGrep(transcript, validators.get('Grep'), model) ??
+      verifyDiscoveredEdits(verificationMessages, validators, model, editOptions.command) ??
       (editOptions.command && readFailedTestFrames(verificationMessages, validators.get('Read'), model,
-        choice.disable_parallel_tool_use, editOptions.command));
+        choice.disable_parallel_tool_use, editOptions));
     if (localResult) return {localResult};
   }
   if (editFiles) {
@@ -689,9 +696,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     ].join('\n');
   const rangeGuide = rangeEnabled ? [
     'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
-    'Use the current read_id and inclusive range in the header below. Prefix every replacement line with its space count and |, including 0| for a blank line. Omit Markdown fences and leave surrounding lines outside the range. To delete the selected lines, leave the body empty.',
-    'EDIT READ_ID START END_LINE INDENT',
-    '2|replacement code',
+    'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, leave the body empty.',
+    'EDIT READ_ID START END_LINE',
+    '  replacement code',
     'END',
     'END is the last line of the reply. Wait for Claude Code’s Edit result before requesting another tool or reporting a result.',
     'In the transcript, changed_lines on a prior Edit shows only the changed source, and the linked tool result records whether it ran.'
@@ -849,6 +856,13 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
   const explicitId = obj && Object.hasOwn(obj, 'request_id');
   if (explicitId ? obj.request_id !== request.requestId : !matchedTurn) {
     throw staleRequestError('Meta AI reply does not match this request.');
+  }
+  // Some WhatsApp replies send native Read/Grep/Glob blocks directly. Keep
+  // this compatibility path read-only and let the usual validators assign IDs.
+  if (matchedTurn && request.choice.type === 'auto' && !request.editFiles &&
+      Array.isArray(obj) && obj.length > 0 &&
+      obj.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name))) {
+    obj = {content: obj};
   }
   if (!Array.isArray(obj?.content) || !obj.content.length) {
     throw repairableError('Meta AI returned no content.');

@@ -53,8 +53,8 @@ export class WhatsApp {
     }
     if (['fatal','disconnected','logged_out'].includes(e.event)) return this.fail(e.error ?? e.event);
     if (e.event === 'error') {
-      if (this.pending && e.id === this.pending.id) this.pending.reject(new GatewayError(e.error, 502));
-      else this.fail(e.error);
+      if (!e.id) this.fail(e.error);
+      else if (e.id === this.pending?.id) this.pending.reject(new GatewayError(e.error, 502));
       return;
     }
     if (e.event !== 'message' || !this.pending) return;
@@ -73,7 +73,9 @@ export class WhatsApp {
     let reply;
     try {
       if (text.trim() === 'There was a problem generating a response. Please try again later.') {
-        throw new GatewayError('WhatsApp Meta AI could not generate a response. Please retry.', 503);
+        const error = new GatewayError('WhatsApp Meta AI could not generate a response. Please retry.', 503);
+        error.generationFailure = true;
+        throw error;
       }
       reply = parseReply(text, p.request, {matchedTurn: true});
     }
@@ -90,6 +92,11 @@ export class WhatsApp {
   repairOrReject(p, text) {
     if (this.pending !== p) return;
     const error = p.lastError;
+    if (error?.generationFailure && !p.retriedGeneration) {
+      p.retriedGeneration = true;
+      console.error('Meta AI could not generate a response; retrying that prompt once.');
+      return this.sendPrompt(p, p.prompt);
+    }
     if (!error?.repairable || p.repairCount >= 1) return p.reject(error);
     const repair = error.staleRequest
       ? 'The previous reply used an old request ID. Answer the current request below. For tool envelopes, omit request_id.\n\n' + p.request.prompt
@@ -106,10 +113,17 @@ export class WhatsApp {
       ? '' : '\n\nPrevious reply as quoted data:\n' + JSON.stringify(text);
     const prompt = repair.length + quoted.length <= maxChars ? repair + quoted : repair;
     p.repairCount = (p.repairCount ?? 0) + 1;
+    console.error('Meta AI reply rejected; requesting one repair. ' + error.message.split('\n', 1)[0]);
+    this.sendPrompt(p, prompt);
+  }
+  sendPrompt(p, prompt) {
+    p.prompt = prompt;
     p.id = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
     p.messageIds.clear();
-    console.error('Meta AI reply rejected; requesting one repair. ' + error.message.split('\n', 1)[0]);
-    this.child.stdin.write(JSON.stringify({id:p.id,prompt})+'\n', err => {if(err) p.reject(err);});
+    const {id} = p;
+    this.child.stdin.write(JSON.stringify({id,prompt})+'\n', err => {
+      if (err && this.pending === p && p.id === id) p.reject(err);
+    });
   }
   async complete(request, signal) {
     if (!this.ready) throw new GatewayError(`WhatsApp unavailable: ${this.status}`, 503);
@@ -118,12 +132,12 @@ export class WhatsApp {
     let p;
     try {
       return await new Promise((resolve, reject) => {
-        p = {id: `3EB0${randomBytes(10).toString('hex').toUpperCase()}`, request, resolve, reject, repairCount: 0, messageIds: new Set()};
+        p = {request, resolve, reject, repairCount: 0, messageIds: new Set()};
         this.pending = p;
         p.timer = setTimeout(() => reject(p.lastError ?? new GatewayError('Meta AI response timed out. The WhatsApp prompt may have been sent; it was not retried.', 504)), this.timeout);
         p.abort = () => reject(new GatewayError('Request cancelled; an already sent WhatsApp prompt cannot be recalled.', 499));
         signal?.addEventListener('abort', p.abort, {once: true});
-        this.child.stdin.write(JSON.stringify({id:p.id,prompt:request.prompt})+'\n', err => {if(err) reject(err);});
+        this.sendPrompt(p, request.prompt);
       });
     } finally {
       clearTimeout(p?.timer); clearTimeout(p?.settle);

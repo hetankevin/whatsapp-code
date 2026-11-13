@@ -26,7 +26,7 @@ function transportFixture(tools = []) {
   const request = prepare({tools, system:'Use this project.', messages:[{role:'user',content:'hello'}]});
   const writes=[];let resolved, rejected;
   w.child = {stdin:{write:line=>writes.push(JSON.parse(line))}};
-  w.pending = {id:'original',request,messageIds:new Set(),repairCount:0,
+  w.pending = {id:'original',request,prompt:request.prompt,messageIds:new Set(),repairCount:0,
     resolve:value=>{resolved=value},reject:error=>{rejected=error}};
   return {w,request,writes,get resolved(){return resolved},get rejected(){return rejected}};
 }
@@ -47,14 +47,30 @@ test('format repair is bounded', async () => {
   assert.equal(f.writes.length,1);assert.match(f.rejected.message,/JSON/);
 });
 
-test('a Meta AI generation failure surfaces as an upstream error', async () => {
+test('a Meta AI generation failure retries the current prompt just once', async () => {
   const f = transportFixture();
-  await f.w.event({event:'message',id:'failed',target:'original',edit:'full',
-    message:{conversation:'There was a problem generating a response. Please try again later.'}});
+  const message = (target, conversation) => f.w.event({event:'message',id:target + '-reply',
+    target,edit:'full',message:{conversation}});
+  const failure = 'There was a problem generating a response. Please try again later.';
+  await message('original', failure);
+  assert.equal(f.writes.length, 1);
+  const [{id, prompt}] = f.writes;
+  assert.equal(prompt, f.request.prompt);
+  assert.notEqual(id, 'original');
+  await f.w.event({event:'error',id:'original',error:'late transport error'});
+  await message('original', 'late successful reply');
+  assert.equal(f.rejected, undefined);
   assert.equal(f.resolved, undefined);
+  await message(id, failure);
   assert.equal(f.rejected.status, 503);
   assert.match(f.rejected.message, /WhatsApp Meta AI could not generate a response/);
-  assert.equal(f.writes.length, 0);
+  assert.equal(f.writes.length, 1);
+
+  const recovered = transportFixture();
+  await recovered.w.event({event:'message',id:'failed',target:'original',edit:'full',message:{conversation:failure}});
+  await recovered.w.event({event:'message',id:'success',target:recovered.writes[0].id,
+    edit:'full',message:{conversation:'OK'}});
+  assert.equal(recovered.resolved.content[0].text, 'OK');
 });
 
 test('a matched final WhatsApp answer can be ordinary text', async () => {
@@ -461,7 +477,8 @@ test('encoded indentation survives CRLF framing without changing source characte
 test('mixed EDIT indentation markers cannot be written into the source', () => {
   const request = lineEditRequest();
   const handle = request.editableReads[0].read_id;
-  assert.match(request.prompt, /EDIT READ_ID START END_LINE INDENT/);
+  assert.match(request.prompt, /EDIT READ_ID START END_LINE\n/);
+  assert.match(request.prompt, /Paste literal replacement source with its indentation/);
   const corrupt = 'EDIT ' + handle + ' 8 8\nINDENT\nreturn "mixed";\n2|return "new";\nEND';
   assert.throws(() => parseReply(corrupt, request, {matchedTurn:true}), /Put INDENT on the EDIT header/);
   const repaired = 'EDIT ' + handle + ' 8 8 INDENT\n2|return "new";\nEND';
@@ -544,9 +561,9 @@ test('a configured test verifies discovered edits without fixed files', () => {
     {role:'user',content:[{type:'tool_result',tool_use_id:call.id,content,is_error}]}
   );
   assert.equal(turn().localResult, undefined, 'The model decides how to start the native workflow');
-  const [baseline] = parseReply(JSON.stringify({content:[
-    {type:'tool_use',name:'Bash',input:{command}}
-  ]}), turn(), {matchedTurn:true}).content;
+  record({type:'tool_use',name:'Read',id:'initial-read',input:{file_path:'main.js'}}, '1\tlet result;');
+  const [baseline] = turn().localResult.content;
+  assert.equal(baseline.input.command, command);
   record(baseline,'1 failing',true);
   assert.throws(() => parseReply('Tests passed.',turn(),{matchedTurn:true}), /still failing/);
   assert.throws(() => parseReply('{"content":[{"type":"text","text":"Tests passed."}]}',turn(),
@@ -594,7 +611,8 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
       '    at Context.<anonymous> (tests/config.js:166:34)\n' +
       '    at Object.run (node_modules/mocha/index.js:25:4)'}]}
   ];
-  const configured = body => prepare({tools,messages,...body}, 60000, false, undefined, {command:'npm test'});
+  const configured = (body, projectRoot) => prepare({tools,messages,...body}, 60000, false, undefined,
+    {command:'npm test',projectRoot});
   const calls = configured().localResult.content;
   assert.deepEqual(calls.map(({name,input}) => ({name,input})), [
     {name:'Read',input:{file_path:'lib/objects/load.js',offset:551,limit:48}},
@@ -616,6 +634,10 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
   assert.deepEqual(rereads.map(call => call.input.file_path),
     ['lib/merge.js','lib/objects/load.js','lib/config.js']);
   assert.deepEqual(rereads.slice(1).map(call => call.input), calls.slice(0, 2).map(call => call.input));
+  messages.at(-1).content[0].content = '/work/project/lib/merge.js:105\nSyntaxError: unexpected token\n' +
+    '    at Function.run (/work/project-other/lib/outside.js:112:4)';
+  assert.deepEqual(configured({}, '/work/project').localResult.content.map(call => call.input.file_path),
+    ['lib/merge.js','lib/objects/load.js','lib/config.js']);
 });
 test('snapshot context keeps one current read and the latest test outcome', () => {
   const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
