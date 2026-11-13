@@ -131,7 +131,10 @@ function resolveLineEdit(input, request) {
   // checks for file changes and ambiguity before modifying anything.
   const updated = [...lines];
   updated.splice(start_line - first, end_line - start_line + 1, ...(replacement === '' ? [] : replacement.split('\n')));
-  return {file_path: filePath, old_string: lines.join('\n'), new_string: updated.join('\n')};
+  const old_string = lines.join('\n');
+  const new_string = updated.join('\n');
+  if (new_string === old_string) throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
+  return {file_path: filePath, old_string, new_string};
 }
 
 // Claude Code keeps the exact Edit arguments. WhatsApp only needs the
@@ -229,7 +232,8 @@ function parseBoundEdit(text, request) {
     if (!selector || index < 0 || index >= request.snapshots.size) throw new SyntaxError('Select one listed file number.');
     text = text.slice(selector[0].length);
   }
-  const [readId, snapshot] = [...request.snapshots][index];
+  const excerpts = [...request.snapshots];
+  const [readId, snapshot] = excerpts[index];
   if (request.useVerificationContext && /^BEFORE\r?\n/.test(text)) {
     const proposal = /^BEFORE\r?\n(\x60{3})[\w+-]*[ \t]*\r?\n([\s\S]+?)\r?\n\1\r?\n\s*AFTER\r?\n\1[\w+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1(?:\r?\n|$)/.exec(text);
     if (!proposal) throw new SyntaxError('Expected a BEFORE and AFTER code block.');
@@ -251,8 +255,18 @@ function parseBoundEdit(text, request) {
   const frame = firstEditFrame(text);
   const match = /^REPLACE[ \t]+(\d+[ \t]+\d+(?:[ \t]+INDENT)?)[ \t]*\r?\n([\s\S]*?)\r?\nEND$/.exec(frame);
   if (match) {
-    return parseLineFrame('EDIT ' + request.requestId + ' ' + readId + ' ' + match[1] +
+    const reply = parseLineFrame('EDIT ' + request.requestId + ' ' + readId + ' ' + match[1] +
       '\n' + match[2] + '\nEND ' + request.requestId, frame !== text);
+    if (request.useVerificationContext) {
+      const {input} = reply.content[0];
+      const contains = source => input.start_line >= source.first &&
+        input.end_line < source.first + source.lines.length;
+      if (!contains(snapshot)) {
+        const alternatives = excerpts.filter(([, source]) => source.filePath === snapshot.filePath && contains(source));
+        if (alternatives.length === 1) input.read_id = alternatives[0][0];
+      }
+    }
+    return reply;
   }
   if (request.useVerificationContext) throw repairableError('Use FILE and REPLACE to identify the exact lines to change.');
   const fenced = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1$/.exec(text);

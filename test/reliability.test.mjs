@@ -398,6 +398,7 @@ test('range edits reject unobserved lines, stale snapshots, and parallel calls',
   const request = lineEditRequest();
   assert.throws(() => parseReply(reply(request,call({start_line:6})),request), /outside/);
   assert.throws(() => parseReply(reply(request,call({end_line:10})),request), /outside/);
+  assert.throws(() => parseReply(reply(request,call({new_string:'  return "old";'})),request), /unchanged/);
   assert.throws(() => parseReply(reply(request,call(),call()),request), /without other tools/);
   assert.equal(parseReply(reply(request,call()),request).content[0].input.new_string, 'const a = 1;\n}');
   const stale = lineEditRequest([{role:'assistant',content:[
@@ -565,8 +566,8 @@ test('a configured test verifies discovered edits without fixed files', () => {
   const [baseline] = turn().localResult.content;
   assert.equal(baseline.input.command, command);
   record(baseline,'1 failing\n    at inner (callee.js:1:2)\n    at outer (caller.js:1:2)',true);
-  for (const [id, file_path] of [['r1','caller.js'],['r2','callee.js']]) {
-    record({type:'tool_use',id,name:'Read',input:{file_path}}, '1\tfunction handle() {}');
+  for (const [id, file_path, line] of [['r1','caller.js',1],['r2','callee.js',1],['r3','callee.js',30]]) {
+    record({type:'tool_use',id,name:'Read',input:{file_path}}, line + '\tfunction handle() {}');
   }
   const request = turn();
   assert.throws(() => parseReply('Tests passed.',request,{matchedTurn:true}), /still failing/);
@@ -583,6 +584,10 @@ test('a configured test verifies discovered edits without fixed files', () => {
   assert.equal(proposal.input.file_path, 'callee.js');
   assert.equal(trailing, undefined);
   assert.equal(proposal.input.new_string, 'function handle() { return 1; }');
+  const wrongExcerpt = 'FILE 2\nREPLACE 30 30\nfunction other() {}\nEND';
+  assert.equal(parseReply(wrongExcerpt,request,{matchedTurn:true}).content[0].input.new_string, 'function other() {}');
+  assert.throws(() => parseReply(wrongExcerpt.replace('FILE 2','FILE 1'),request,{matchedTurn:true}), /outside/);
+  assert.throws(() => parseReply(wrongExcerpt.replace('30 30','1 30'),request,{matchedTurn:true}), /outside/);
   const fence = '\x60'.repeat(3);
   const anchored = ['FILE 2', 'BEFORE', fence, 'function handle() {}', fence, 'AFTER',
     fence, 'function handle() { return 1; }', fence].join('\n');
