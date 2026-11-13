@@ -65,7 +65,7 @@ const server = createGateway({
         }
         const initial = (await readFile(target,'utf8')).includes('"initial"');
         const editedFile = initial ? target : helper;
-        const selected = request.editableReads.findIndex(read => read.file_path === editedFile);
+        const selected = request.editableReads.findIndex(read => path.resolve(dir, read.file_path) === editedFile);
         assert.ok(selected >= 0);
         assert.match(request.prompt, /not ok 1 - reports expected result/);
         const replacement = initial ? source : helperSource;
@@ -149,7 +149,7 @@ try {
   clearTimeout(timer);
   assert.equal(code, 0, stderr + '\n' + stdout);
   if (verifyEdits) {
-    assert.equal(rounds, discoverFiles ? 5 : 2);
+    assert.equal(rounds, discoverFiles ? 4 : 2);
     assert.equal(await readFile(target, 'utf8'), source);
     if (multiFile) assert.equal(await readFile(helper, 'utf8'), helperSource + '// Outside the edit range.\n');
     assert.ok(stdout.includes('ran ' + testCommand + ' successfully'));

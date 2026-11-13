@@ -460,17 +460,32 @@ function readFailedTestFrames(messages, validate, model, singleTool, {command, p
   const overlaps = ({file_path, offset, limit}) => reads.some(read => read.file_path === file_path &&
     offset < read.offset + read.limit && read.offset < offset + limit);
   const syntaxError = /^(?:# )?SyntaxError:/m.test(output);
+  // An assertion may have no implementation stack frame. In that case reuse
+  // bounded reads from the investigation, including reads requested by the model.
+  const successfulReads = new Set();
   for (const message of messages.slice().reverse()) {
     if (reads.length >= maxFiles) break;
-    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    if (!Array.isArray(message.content)) continue;
+    if (message.role === 'user') {
+      for (const block of message.content) {
+        if (block.type === 'tool_result' && !block.is_error) successfulReads.add(block.tool_use_id);
+      }
+      continue;
+    }
+    if (message.role !== 'assistant') continue;
     for (const {id, name, input} of message.content) {
       if (reads.length >= maxFiles) break;
-      if (name !== 'Read' || typeof id !== 'string' || !id.startsWith('toolu_stack_') ||
-          !Number.isSafeInteger(input?.offset) || !Number.isSafeInteger(input?.limit) ||
-          typeof input.file_path !== 'string' || input.file_path.startsWith('/') ||
-          input.file_path.split('/').includes('..') || overlaps(input)) continue;
-      if (frames.has(input.file_path) && !syntaxError) continue;
-      reads.push(input);
+      if (name !== 'Read' || typeof id !== 'string' || !successfulReads.has(id) ||
+          (frames.size && !id.startsWith('toolu_stack_')) ||
+          !Number.isSafeInteger(input?.offset) || input.offset < 1 ||
+          !Number.isSafeInteger(input?.limit) || input.limit < 1 || input.limit > 100 ||
+          typeof input.file_path !== 'string') continue;
+      const file_path = path.isAbsolute(input.file_path) && projectRoot
+        ? path.relative(projectRoot, input.file_path) : input.file_path;
+      const read = {...input, file_path};
+      if (!file_path || path.isAbsolute(file_path) || file_path.split('/').includes('..') ||
+          overlaps(read) || (frames.has(file_path) && !syntaxError)) continue;
+      reads.push(read);
     }
   }
   for (const [file_path, line] of distantFrames) {

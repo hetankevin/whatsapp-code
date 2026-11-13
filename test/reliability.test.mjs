@@ -663,6 +663,27 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
     {role:'user',content:syntaxReads.map(call => ({type:'tool_result',tool_use_id:call.id,content:'1\treturn value;'}))});
   assert.match(configured({}, '/work/project').prompt,
     /Latest test failure:\n\/work\/project\/lib\/objects\/load\.js:635\n\n\nSyntaxError: Unexpected end of input/);
+
+  const testAssertion = [
+    ...messages.slice(0, 1),
+    {role:'assistant',content:[
+      {type:'tool_use',name:'Read',id:'oversize',input:{file_path:'large.js',offset:1,limit:101}},
+      {type:'tool_use',name:'Read',id:'outside',input:{file_path:'/work/other/script.js',offset:10,limit:20}},
+      {type:'tool_use',name:'Read',id:'missing',input:{file_path:'missing.js',offset:10,limit:20}},
+      {type:'tool_use',name:'Read',id:'read-source',input:{file_path:'/work/project/lib/config.js',offset:10,limit:20}}
+    ]},
+    {role:'user',content:[
+      {type:'tool_result',tool_use_id:'oversize',content:'1\tconst large = true;'},
+      {type:'tool_result',tool_use_id:'outside',content:'10\treturn script;'},
+      {type:'tool_result',tool_use_id:'missing',is_error:true,content:'File missing'},
+      {type:'tool_result',tool_use_id:'read-source',content:'10\treturn config;'}
+    ]},
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'assertion',input:{command:'npm test'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'assertion',is_error:true,
+      content:'AssertionError: config should retain cache\n    at check (tests/config.js:10:4)'}]}
+  ];
+  assert.deepEqual(configured({messages:testAssertion}, '/work/project').localResult.content.map(call => call.input),
+    [{file_path:'lib/config.js',offset:10,limit:20}]);
 });
 test('snapshot context keeps one current read and the latest test outcome', () => {
   const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
