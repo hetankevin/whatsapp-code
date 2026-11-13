@@ -580,6 +580,17 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
     .localResult.content.length,1);
   assert.equal(configured({tool_choice:{type:'none'}}).localResult,undefined);
   assert.equal(prepare({tools,messages}).localResult,undefined);
+  messages.push(
+    {role:'assistant',content:calls},
+    {role:'user',content:calls.map(call => ({type:'tool_result',tool_use_id:call.id,content:'1\treturn value;'}))},
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'second',input:{command:'npm test'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'second',is_error:true,
+      content:'TypeError: invalid input\n    at merge (lib/merge.js:105:4)'}]}
+  );
+  const rereads = configured().localResult.content;
+  assert.deepEqual(rereads.map(call => call.input.file_path),
+    ['lib/merge.js','lib/objects/load.js','lib/config.js']);
+  assert.deepEqual(rereads.slice(1).map(call => call.input), calls.map(call => call.input));
 });
 test('snapshot context keeps one current read and the latest test outcome', () => {
   const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));

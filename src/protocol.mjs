@@ -395,6 +395,7 @@ function readFailedTestFrames(messages, validate, model, singleTool, command) {
   if (!output) return;
 
   const frames = new Map();
+  const maxFiles = singleTool ? 1 : 3;
   const framePattern = /^(?:[ \t]+at[ \t]+(?:[^\n(]+\()?|(?=\/))((?:\.{1,2}\/|\/)?[\w./@+-]+\.[cm]?[jt]sx?):(\d+)(?::\d+)?\)?[ \t]*$/gm;
   for (const [, file, lineText] of output.matchAll(framePattern)) {
     if (file.startsWith('/') || file.split('/').includes('..') ||
@@ -403,7 +404,7 @@ function readFailedTestFrames(messages, validate, model, singleTool, command) {
     const line = Number(lineText);
     if (!Number.isSafeInteger(line) || line < 1) continue;
     if (!frames.has(file)) {
-      if (frames.size === (singleTool ? 1 : 3)) continue;
+      if (frames.size === maxFiles) continue;
       frames.set(file, [line, line]);
     }
     const [first, last] = frames.get(file);
@@ -411,14 +412,29 @@ function readFailedTestFrames(messages, validate, model, singleTool, command) {
     const end = Math.max(last, line);
     if (end - start < 72) frames.set(file, [start, end]);
   }
-  const calls = [];
-  for (const [file_path, [start, end]] of frames) {
-    const offset = Math.max(1, start - 16);
-    const input = {file_path, offset, limit: Math.min(100, end - offset + 17)};
-    if (validate(input)) calls.push({
-      type:'tool_use', id:'toolu_stack_' + randomBytes(12).toString('hex'), name:'Read', input
-    });
+  // Keep previously discovered files in view when a new exception points
+  // elsewhere. Read them again, since an edit invalidated the old snapshots.
+  const previousReads = new Map();
+  for (const message of messages.slice().reverse()) {
+    if (frames.size + previousReads.size >= maxFiles) break;
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const {id, name, input} of message.content) {
+      if (frames.size + previousReads.size >= maxFiles) break;
+      if (name !== 'Read' || typeof id !== 'string' || !id.startsWith('toolu_stack_') ||
+          !Number.isSafeInteger(input?.offset) || !Number.isSafeInteger(input?.limit) ||
+          typeof input.file_path !== 'string' || input.file_path.startsWith('/') ||
+          input.file_path.split('/').includes('..') || frames.has(input.file_path) ||
+          previousReads.has(input.file_path)) continue;
+      previousReads.set(input.file_path, input);
+    }
   }
+  const currentReads = Array.from(frames, ([file_path, [start, end]]) => {
+    const offset = Math.max(1, start - 16);
+    return {file_path, offset, limit: Math.min(100, end - offset + 17)};
+  });
+  const calls = [...currentReads, ...previousReads.values()].filter(input => validate(input)).map(input => ({
+    type:'tool_use', id:'toolu_stack_' + randomBytes(12).toString('hex'), name:'Read', input
+  }));
   if (calls.length) return assistantMessage(model, calls);
 }
 
