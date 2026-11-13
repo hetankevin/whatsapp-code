@@ -22,6 +22,26 @@ test('invalid tool calls and mismatched replies fail closed',()=>{
  assert.throws(()=>parseReply('{"request_id":"stale","content":[{"type":"text","text":"x"}]}',r),/match/);
  assert.throws(()=>parseReply('I will run Read now',r),/JSON/);
 });
+test('native Read ignores a misplaced display label while validating the actual arguments', () => {
+ const r=prepare(body());
+ const read=input=>parseReply(reply(r,[{type:'tool_use',name:'Read',input}]),r);
+ assert.deepEqual(read({file_path:'example.txt',description:'Inspect the file'}).content[0].input,{file_path:'example.txt'});
+ assert.throws(()=>read({file_path:4,description:'Inspect the file'}), /invalid arguments/);
+ assert.throws(()=>read({file_path:'example.txt',other:'unsupported'}), /invalid arguments/);
+});
+test('matched replies can carry a read-only call after an explanation', () => {
+ const b=body();
+ b.tools.push({name:'Bash', input_schema:{type:'object'}});
+ const r=prepare(b);
+ const prefix='I will inspect the caller.\n';
+ const call={type:'tool_use',name:'Read',input:{file_path:'example.txt'}};
+ const text=prefix+JSON.stringify({content:[call]});
+ assert.equal(parseReply(text,r,{matchedTurn:true}).content[0].name,'Read');
+ assert.throws(()=>parseReply(text,r), /complete protocol/);
+ assert.throws(()=>parseReply('EDIT invalid frame\n'+text,r,{matchedTurn:true}), /complete protocol/);
+ assert.throws(()=>parseReply(prefix+JSON.stringify({content:[call,{...call,name:'Bash'}]}),r,
+   {matchedTurn:true}), /complete protocol/);
+});
 test('required tool selection and no-tools are enforced',()=>{
  const b=body(); b.tool_choice={type:'none'};let r=prepare(b);
  assert.throws(()=>parseReply(reply(r,[{type:'tool_use',name:'Read',input:{file_path:'x'}}]),r));

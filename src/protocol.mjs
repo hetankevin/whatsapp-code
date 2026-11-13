@@ -582,6 +582,16 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars};
 }
 
+function parseReadOnlyToolSuffix(text) {
+  const boundary = /\r?\n(?=\{[ \t]*"content"\s*:)/.exec(text);
+  if (!boundary || /(?:^|\n)[ \t]*(?:EDIT\b|REPLACE\b|FILE\b|[\[{]|\x60{3})/.test(text.slice(0, boundary.index))) return;
+  const reply = JSON.parse(text.slice(boundary.index + boundary[0].length));
+  if (Array.isArray(reply?.content) && reply.content.length &&
+      reply.content.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name))) {
+    return reply;
+  }
+}
+
 export function parseReply(raw, request, {matchedTurn = false} = {}) {
   const original = raw.trim();
   const fence = /^(\x60{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i.exec(original);
@@ -610,7 +620,12 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
         try { obj = parseCodeFrame(trimmed); }
         catch {
           try { obj = parseWrappedLineFrame(trimmed); }
-          catch { obj = parseLiteralEditString(trimmed); }
+          catch {
+            obj = matchedTurn && request.choice.type === 'auto' && !request.editFiles
+              ? parseReadOnlyToolSuffix(trimmed)
+              : undefined;
+            if (!obj) obj = parseLiteralEditString(trimmed);
+          }
         }
       }
     }
@@ -650,8 +665,19 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
     const lineEdit = hasLineEdit && b.name === 'EditLines';
     const name = lineEdit ? 'Edit' : b.name;
     if (!request.validators.has(name)) throw repairableError('Meta AI returned an unknown content block or tool.');
-    const input = lineEdit ? resolveLineEdit(b.input, request) : b.input;
-    if (!request.validators.get(name)(input)) throw repairableError('Meta AI supplied invalid arguments for ' + name + '. Match the tool input schema.');
+    let input = lineEdit ? resolveLineEdit(b.input, request) : b.input;
+    const validate = request.validators.get(name);
+    if (!validate(input)) {
+      // Meta AI sometimes copies Bash's display label onto Read.
+      if (name === 'Read' && validate.errors?.length === 1 &&
+          validate.errors[0].keyword === 'additionalProperties' &&
+          validate.errors[0].params.additionalProperty === 'description' &&
+          typeof input.description === 'string') {
+        const {description, ...readInput} = input;
+        input = readInput;
+      }
+      if (!validate(input)) throw repairableError('Meta AI supplied invalid arguments for ' + name + '. Match the tool input schema.');
+    }
     const repeatedTest = testCommand({name, input});
     if (request.testFailures?.has(repeatedTest)) {
       const error = repairableError('This test command already failed and no workspace change is recorded. Inspect the failure, then edit or investigate before rerunning it.');
