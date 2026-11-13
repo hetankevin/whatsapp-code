@@ -564,17 +564,19 @@ test('a configured test verifies discovered edits without fixed files', () => {
   record({type:'tool_use',name:'Read',id:'initial-read',input:{file_path:'main.js'}}, '1\tlet result;');
   const [baseline] = turn().localResult.content;
   assert.equal(baseline.input.command, command);
-  record(baseline,'1 failing',true);
-  assert.throws(() => parseReply('Tests passed.',turn(),{matchedTurn:true}), /still failing/);
-  assert.throws(() => parseReply('{"content":[{"type":"text","text":"Tests passed."}]}',turn(),
-    {matchedTurn:true}), /still failing/);
+  record(baseline,'1 failing\n    at inner (callee.js:1:2)\n    at outer (caller.js:1:2)',true);
   for (const [id, file_path] of [['r1','caller.js'],['r2','callee.js']]) {
     record({type:'tool_use',id,name:'Read',input:{file_path}}, '1\tfunction handle() {}');
   }
   const request = turn();
+  assert.throws(() => parseReply('Tests passed.',request,{matchedTurn:true}), /still failing/);
+  assert.throws(() => parseReply('{"content":[{"type":"text","text":"Tests passed."}]}',request,
+    {matchedTurn:true}), /still failing/);
   assert.match(request.prompt, /FILE 1: caller\.js/);
   assert.match(request.prompt, /FILE 2: callee\.js/);
   assert.match(request.prompt, /Latest test failure:\n1 failing/);
+  assert.match(request.prompt, /REPLACE START END, using the inclusive line numbers of the lines you want to change/);
+  assert.match(request.prompt, /innermost call first[^\n]*\ncallee\.js:1 function handle\(\) \{\}\ncaller\.js:1 function handle\(\) \{\}/);
   const [proposal, trailing] = parseReply('FILE 2\nREPLACE 1 1\n0|function handle() { return 1; }\nEND\n' +
     '[{"type":"tool_use","name":"Bash","input":{"command":"make check"}}]',
     request,{matchedTurn:true}).content;
