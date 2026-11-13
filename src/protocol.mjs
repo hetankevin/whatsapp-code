@@ -254,7 +254,7 @@ function parseBoundEdit(text, request) {
     return parseLineFrame('EDIT ' + request.requestId + ' ' + readId + ' ' + match[1] +
       '\n' + match[2] + '\nEND ' + request.requestId, frame !== text);
   }
-  if (request.useVerificationContext) throw repairableError('Use FILE, BEFORE and AFTER to identify the exact lines to change.');
+  if (request.useVerificationContext) throw repairableError('Use FILE and REPLACE to identify the exact lines to change.');
   const fenced = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1$/.exec(text);
   if (!fenced || /^\x60{3,}/m.test(fenced[2])) throw new SyntaxError('Expected one source block.');
   const source = fenced[2];
@@ -436,33 +436,34 @@ function readFailedTestFrames(messages, validate, model, singleTool, {command, p
     if (end - start < 66) frames.set(file, [start, end]);
     else distantFrames.push([file, line]);
   }
-  // Keep previously discovered files in view when a new exception points
-  // elsewhere. Read them again, since an edit invalidated the old snapshots.
-  const previousReads = new Map();
-  for (const message of messages.slice().reverse()) {
-    if (frames.size + previousReads.size >= maxFiles) break;
-    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
-    for (const {id, name, input} of message.content) {
-      if (frames.size + previousReads.size >= maxFiles) break;
-      if (name !== 'Read' || typeof id !== 'string' || !id.startsWith('toolu_stack_') ||
-          !Number.isSafeInteger(input?.offset) || !Number.isSafeInteger(input?.limit) ||
-          typeof input.file_path !== 'string' || input.file_path.startsWith('/') ||
-          input.file_path.split('/').includes('..') || frames.has(input.file_path) ||
-          previousReads.has(input.file_path)) continue;
-      previousReads.set(input.file_path, input);
-    }
-  }
+  // A syntax error can point to the end of a file after the edit deleted a
+  // delimiter much earlier. Reread earlier disjoint windows in that file too.
   const currentReads = Array.from(frames, ([file_path, [start, end]]) => {
     const offset = Math.max(1, start - 16);
     return {file_path, offset, limit: Math.min(100, end - offset + 17)};
   });
-  const reads = [...currentReads, ...previousReads.values()];
+  const reads = [...currentReads];
+  const overlaps = ({file_path, offset, limit}) => reads.some(read => read.file_path === file_path &&
+    offset < read.offset + read.limit && read.offset < offset + limit);
+  const syntaxError = /^(?:# )?SyntaxError:/m.test(output);
+  for (const message of messages.slice().reverse()) {
+    if (reads.length >= maxFiles) break;
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const {id, name, input} of message.content) {
+      if (reads.length >= maxFiles) break;
+      if (name !== 'Read' || typeof id !== 'string' || !id.startsWith('toolu_stack_') ||
+          !Number.isSafeInteger(input?.offset) || !Number.isSafeInteger(input?.limit) ||
+          typeof input.file_path !== 'string' || input.file_path.startsWith('/') ||
+          input.file_path.split('/').includes('..') || overlaps(input)) continue;
+      if (frames.has(input.file_path) && !syntaxError) continue;
+      reads.push(input);
+    }
+  }
   for (const [file_path, line] of distantFrames) {
     if (reads.length >= maxFiles) break;
     const offset = Math.max(1, line - 28);
     const limit = line - offset + 17;
-    if (reads.some(read => read.file_path === file_path && offset < read.offset + read.limit &&
-        read.offset < offset + limit)) continue;
+    if (overlaps({file_path, offset, limit})) continue;
     reads.push({file_path, offset, limit});
   }
   const calls = reads.filter(input => validate(input)).map(input => ({

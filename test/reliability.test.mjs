@@ -591,7 +591,7 @@ test('a configured test verifies discovered edits without fixed files', () => {
   assert.throws(() => parseReply(anchored.replace('function handle() {}', 'function stale() {}'),
     request, {matchedTurn:true}), /unique range/);
   assert.throws(() => parseReply('FILE 2\n' + fence + '\nfunction stale() {}\n' + fence,
-    request, {matchedTurn:true}), /exact lines/);
+    request, {matchedTurn:true}), /FILE and REPLACE/);
   record({type:'tool_use',id:'edit',name:'Edit',input:{file_path:'src.js'}},'Applied');
   const [retest] = turn().localResult.content;
   assert.equal(retest.input.command, command);
@@ -640,6 +640,19 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
     '    at Function.run (/work/project-other/lib/outside.js:112:4)';
   assert.deepEqual(configured({}, '/work/project').localResult.content.map(call => call.input.file_path),
     ['lib/merge.js','lib/objects/load.js','lib/config.js']);
+  messages.at(-1).content[0].content = 'Warning: old dependency\n'.repeat(24) +
+    '/work/project/lib/objects/load.js:635\n\n\nSyntaxError: Unexpected end of input\n' +
+    '    at importProject (/work/project/lib/config.js:15:4)';
+  const syntaxReads = configured({}, '/work/project').localResult.content;
+  assert.deepEqual(syntaxReads.map(call => call.input), [
+    {file_path:'lib/objects/load.js',offset:619,limit:33},
+    {file_path:'lib/config.js',offset:1,limit:31},
+    calls[0].input
+  ]);
+  messages.push({role:'assistant',content:syntaxReads},
+    {role:'user',content:syntaxReads.map(call => ({type:'tool_result',tool_use_id:call.id,content:'1\treturn value;'}))});
+  assert.match(configured({}, '/work/project').prompt,
+    /Latest test failure:\n\/work\/project\/lib\/objects\/load\.js:635\n\n\nSyntaxError: Unexpected end of input/);
 });
 test('snapshot context keeps one current read and the latest test outcome', () => {
   const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));

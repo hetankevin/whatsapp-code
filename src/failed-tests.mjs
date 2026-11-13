@@ -18,9 +18,11 @@ function failureExcerpt(content) {
     ? content.filter(block => block.type === 'text').map(block => block.text).join('\n')
     : '';
   const lines = text.split('\n');
-  const failure = lines.findIndex(line => /^(?:not ok\b|FAIL\b|E\s{2,}|AssertionError\b|# SyntaxError:|[ \t]+\d+\) )/.test(line));
-  const hasSyntaxError = lines[failure]?.startsWith('# SyntaxError:');
-  const start = Math.max(hasSyntaxError ? failure - 1 : failure, 0);
+  const failure = lines.findIndex(line => /^(?:not ok\b|FAIL\b|E\s{2,}|AssertionError\b|(?:# )?SyntaxError:|[ \t]+\d+\) )/.test(line));
+  const syntaxError = /^(?:# )?SyntaxError:/.test(lines[failure] ?? '');
+  const location = syntaxError ? lines.findLastIndex((line, index) => index < failure &&
+    /^(?:# )?(?:file:\/\/)?\/[^\n]+:\d+(?::\d+)?\s*$/.test(line)) : -1;
+  const start = location >= 0 && failure - location < 6 ? location : Math.max(failure, 0);
   return lines.slice(start, start + 16).join('\n').slice(0, 1000);
 }
 
