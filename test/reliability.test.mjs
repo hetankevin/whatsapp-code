@@ -600,7 +600,12 @@ test('a configured test verifies discovered edits without fixed files', () => {
   record({type:'tool_use',id:'edit',name:'Edit',input:{file_path:'src.js'}},'Applied');
   const [retest] = turn().localResult.content;
   assert.equal(retest.input.command, command);
-  record(retest,'1 passing');
+  record(retest,'1 failing\n    at inner (callee.js:1:2)\n    at outer (caller.js:1:2)\n    receiver is undefined',true);
+  record({type:'tool_use',id:'reread',name:'Read',input:{file_path:'caller.js'}},'1\tfunction handle() {}');
+  assert.match(turn().prompt, /Diagnostic lines that changed since the preceding run:\n    receiver is undefined/);
+  record({type:'tool_use',id:'last-edit',name:'Edit',input:{file_path:'src.js'}},'Applied');
+  const [finalTest] = turn().localResult.content;
+  record(finalTest,'1 passing');
   assert.match(turn().localResult.content[0].text,/ran make check successfully/);
 });
 

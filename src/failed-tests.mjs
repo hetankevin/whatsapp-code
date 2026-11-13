@@ -28,6 +28,7 @@ function failureExcerpt(content) {
 
 export function testState(messages, configuredCommand) {
   let latestFailure;
+  let previousFailure;
   const failures = new Map();
   const pending = new Map();
   for (const message of messages) {
@@ -49,6 +50,7 @@ export function testState(messages, configuredCommand) {
         failures.clear();
         pending.clear();
         latestFailure = undefined;
+        previousFailure = undefined;
       }
       for (const result of results) {
         const command = pending.get(result.tool_use_id);
@@ -57,13 +59,18 @@ export function testState(messages, configuredCommand) {
         if (result.is_error) {
           const failure = failureExcerpt(result.content);
           failures.set(command, failure);
+          if (latestFailure?.command === command) previousFailure = latestFailure;
+          else previousFailure = undefined;
           latestFailure = {command, failure};
         } else {
           failures.delete(command);
-          if (latestFailure?.command === command) latestFailure = undefined;
+          if (latestFailure?.command === command) {
+            latestFailure = undefined;
+            previousFailure = undefined;
+          }
         }
       }
     }
   }
-  return {failures, latestFailure};
+  return {failures, latestFailure, previousFailure};
 }
