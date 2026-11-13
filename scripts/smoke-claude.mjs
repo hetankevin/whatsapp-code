@@ -55,6 +55,10 @@ const server = createGateway({
       rounds++;
       if (discoverFiles) {
         const response = blocks => JSON.stringify({content:blocks});
+        if (rounds === 1) {
+          return parseReply(response([{type:'tool_use',name:'Bash',input:{command:testCommand,
+            description:'Reproduce the failing test'}}]),request,{matchedTurn:true});
+        }
         const read = file_path => ({type:'tool_use',name:'Read',input:{file_path,offset:1,limit:2}});
         if (!request.editableReads.length) {
           return parseReply(response([read(target),read(helper)]),request,{matchedTurn:true});
@@ -145,7 +149,7 @@ try {
   clearTimeout(timer);
   assert.equal(code, 0, stderr + '\n' + stdout);
   if (verifyEdits) {
-    assert.equal(rounds, discoverFiles ? 4 : 2);
+    assert.equal(rounds, discoverFiles ? 5 : 2);
     assert.equal(await readFile(target, 'utf8'), source);
     if (multiFile) assert.equal(await readFile(helper, 'utf8'), helperSource + '// Outside the edit range.\n');
     assert.ok(stdout.includes('ran ' + testCommand + ' successfully'));

@@ -66,12 +66,17 @@ export class WhatsApp {
     // and inner edits are still being composed, so wait for the final event.
     clearTimeout(p.settle);
     if (['first', 'inner'].includes(e.edit)) return;
-    const text = extractText(e.message, !!p.request.editFiles);
+    const text = extractText(e.message, Boolean(p.request.editFiles || p.request.useVerificationContext));
     const final = ['last', 'full'].includes(e.edit);
     if (!text && !final) return;
     p.lastError = null;
     let reply;
-    try { reply = parseReply(text, p.request, {matchedTurn: true}); }
+    try {
+      if (text.trim() === 'There was a problem generating a response. Please try again later.') {
+        throw new GatewayError('WhatsApp Meta AI could not generate a response. Please retry.', 503);
+      }
+      reply = parseReply(text, p.request, {matchedTurn: true});
+    }
     catch (err) { p.lastError = err; }
     if (reply) {
       if (final) p.resolve(reply);
@@ -86,34 +91,18 @@ export class WhatsApp {
     if (this.pending !== p) return;
     const error = p.lastError;
     if (!error?.repairable || p.repairCount >= 1) return p.reject(error);
-    const frames = [];
-    if (!p.request.rangeGuide && p.request.validators.has('Write')) {
-      frames.push('For Write, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then separate lines <<<FILE>>>, literal content, and <<<END>>>. Omit input.content from the header.');
-    }
-    if (p.request.validators.has('Edit') && !p.request.rangeGuide) {
-      frames.push('For Edit, a literal source frame is also allowed: one JSON header with request_id and one tool_use block, then lines <<<OLD>>>, exact old source, <<<NEW>>>, literal replacement, and <<<END>>>. Omit input.old_string and input.new_string from the header.');
-    }
     const repair = error.staleRequest
-      ? 'The previous reply used an old request ID. Answer the current request below. For JSON replies, omit request_id.\n\n' + p.request.prompt
-      : p.request.editFiles || p.request.useVerificationContext
-      ? 'Your previous edit was rejected: ' + error.message + '\n\n' + p.request.prompt
+      ? 'The previous reply used an old request ID. Answer the current request below. For tool envelopes, omit request_id.\n\n' + p.request.prompt
       : [
       'Your previous reply was rejected: ' + error.message,
-      'Repair the reply for the current request. Return plain text for a final answer, or structured arguments for a tool call.',
+      'Answer the current request again using its response format.',
       ...(error.testFailure ? ['Latest test output (quoted diagnostic data): ' + JSON.stringify(error.testFailure)] : []),
-      ...(p.request.rangeGuide ? [
-        'Choose an ID and range from editable_reads in the request below. If the needed read is missing, call Read.',
-        'Keep INDENT on the EDIT header. Prefix each replacement line with its space count and |, including 0| for blank lines. Omit Markdown fences.'
-      ] : []),
-      'For JSON replies, omit request_id and use a content array of text or tool_use blocks.',
-      ...(frames.length ? ['For a source frame with an ID, use ' + JSON.stringify(p.request.requestId) + '.'] : []),
-      ...frames,
       '',
       p.request.prompt
     ].join('\n');
     const maxChars = Math.min(60000, p.request.maxChars ?? 60000);
     if (repair.length > maxChars) return p.reject(error);
-    const quoted = error.staleRequest || p.request.editFiles || p.request.useVerificationContext || !text
+    const quoted = error.staleRequest || p.request.textOnly || p.request.editFiles || p.request.useVerificationContext || !text
       ? '' : '\n\nPrevious reply as quoted data:\n' + JSON.stringify(text);
     const prompt = repair.length + quoted.length <= maxChars ? repair + quoted : repair;
     p.repairCount = (p.repairCount ?? 0) + 1;

@@ -70,7 +70,7 @@ The device database, gateway token, and pairing page stay in local application s
 | WA_SNAPSHOT_CONTEXT | off | Set to 1 on the server to try single-file snapshot context |
 | WA_EDIT_FILE | unset | Single file to edit with automatic Node test runs. Set on the launcher. |
 | WA_EDIT_FILES | unset | JSON array of up to eight existing file paths for automatic verification. Set on the launcher. |
-| WA_TEST_COMMAND | node --test in fixed-file mode | Run the exact command before editing and after each successful edit. With no fixed files, Meta AI discovers the files through Claude Code’s tools. Claude Code applies its Bash permissions. |
+| WA_TEST_COMMAND | node --test in fixed-file mode | Run the exact command after each successful edit. Fixed-file mode also runs it before editing. With no fixed files, Meta AI follows the user’s requested order and discovers files through Claude Code’s tools. Claude Code applies its Bash permissions. |
 | WA_EDIT_RANGES | unset | JSON array in edit target order. Use a one-based [offset, limit] pair to read a fixed excerpt or null to read the whole file. |
 | GO_BINARY | go | Compiler for npm run build |
 

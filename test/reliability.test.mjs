@@ -47,6 +47,16 @@ test('format repair is bounded', async () => {
   assert.equal(f.writes.length,1);assert.match(f.rejected.message,/JSON/);
 });
 
+test('a Meta AI generation failure surfaces as an upstream error', async () => {
+  const f = transportFixture();
+  await f.w.event({event:'message',id:'failed',target:'original',edit:'full',
+    message:{conversation:'There was a problem generating a response. Please try again later.'}});
+  assert.equal(f.resolved, undefined);
+  assert.equal(f.rejected.status, 503);
+  assert.match(f.rejected.message, /WhatsApp Meta AI could not generate a response/);
+  assert.equal(f.writes.length, 0);
+});
+
 test('a matched final WhatsApp answer can be ordinary text', async () => {
   const f = transportFixture();
   const answer = 'A faster bound uses preprocessing.\n\nThe details depend on the computation model.';
@@ -62,11 +72,13 @@ test('a matched final WhatsApp answer can be ordinary text', async () => {
   assert.equal(f.writes.length, 0);
 
   const body = {messages:[{role:'user',content:'Question'}]};
-  for (const choice of ['auto', 'none']) {
-    const request = prepare({...body,tool_choice:{type:choice}});
-    assert.throws(() => parseReply(answer, request), /protocol JSON/);
-    assert.throws(() => parseReply('Here is the tool: {"type":"tool_use"', request, {matchedTurn:true}), /protocol JSON/);
-  }
+  const request = prepare(body);
+  assert.throws(() => parseReply(answer, request), /protocol JSON/);
+  assert.throws(() => parseReply('Here is the tool: {"type":"tool_use"', request, {matchedTurn:true}), /protocol JSON/);
+  const textOnly = prepare({...body,tool_choice:{type:'none'}});
+  assert.throws(() => parseReply(answer, textOnly), /does not match/);
+  const json = '{"type":"tool_use","name":"Edit","input":{}}';
+  assert.deepEqual(parseReply(json, textOnly, {matchedTurn:true}).content, [{type:'text',text:json}]);
   const required = prepare({...body,tool_choice:{type:'any'}});
   assert.throws(() => parseReply(answer, required, {matchedTurn:true}), /protocol JSON/);
   assert.throws(() => parseReply(answer, {...f.request,editFiles:['/fixture.js']}, {matchedTurn:true}), /protocol JSON/);
@@ -531,8 +543,10 @@ test('a configured test verifies discovered edits without fixed files', () => {
     {role:'assistant',content:[call]},
     {role:'user',content:[{type:'tool_result',tool_use_id:call.id,content,is_error}]}
   );
-  const [baseline] = turn().localResult.content;
-  assert.equal(baseline.input.command, command);
+  assert.equal(turn().localResult, undefined, 'The model decides how to start the native workflow');
+  const [baseline] = parseReply(JSON.stringify({content:[
+    {type:'tool_use',name:'Bash',input:{command}}
+  ]}), turn(), {matchedTurn:true}).content;
   record(baseline,'1 failing',true);
   assert.throws(() => parseReply('Tests passed.',turn(),{matchedTurn:true}), /still failing/);
   assert.throws(() => parseReply('{"content":[{"type":"text","text":"Tests passed."}]}',turn(),
@@ -550,6 +564,15 @@ test('a configured test verifies discovered edits without fixed files', () => {
   assert.equal(proposal.input.file_path, 'callee.js');
   assert.equal(trailing, undefined);
   assert.equal(proposal.input.new_string, 'function handle() { return 1; }');
+  const fence = '\x60'.repeat(3);
+  const anchored = ['FILE 2', 'BEFORE', fence, 'function handle() {}', fence, 'AFTER',
+    fence, 'function handle() { return 1; }', fence].join('\n');
+  const [anchoredEdit] = parseReply(anchored, request, {matchedTurn:true}).content;
+  assert.deepEqual(anchoredEdit.input, proposal.input);
+  assert.throws(() => parseReply(anchored.replace('function handle() {}', 'function stale() {}'),
+    request, {matchedTurn:true}), /unique range/);
+  assert.throws(() => parseReply('FILE 2\n' + fence + '\nfunction stale() {}\n' + fence,
+    request, {matchedTurn:true}), /exact lines/);
   record({type:'tool_use',id:'edit',name:'Edit',input:{file_path:'src.js'}},'Applied');
   const [retest] = turn().localResult.content;
   assert.equal(retest.input.command, command);
@@ -565,6 +588,7 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
     {role:'user',content:[{type:'tool_result',tool_use_id:'b',is_error:true,content:
       'TypeError: invalid context\n' +
       '    at load (lib/objects/load.js:582:12)\n' +
+      '    at apply (lib/objects/load.js:421:36)\n' +
       '    at Object.loadObject (lib/objects/load.js:567:35)\n' +
       '    at new Config (lib/config.js:70:46)\n' +
       '    at Context.<anonymous> (tests/config.js:166:34)\n' +
@@ -574,7 +598,8 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
   const calls = configured().localResult.content;
   assert.deepEqual(calls.map(({name,input}) => ({name,input})), [
     {name:'Read',input:{file_path:'lib/objects/load.js',offset:551,limit:48}},
-    {name:'Read',input:{file_path:'lib/config.js',offset:54,limit:33}}
+    {name:'Read',input:{file_path:'lib/config.js',offset:54,limit:33}},
+    {name:'Read',input:{file_path:'lib/objects/load.js',offset:393,limit:45}}
   ]);
   assert.equal(configured({tool_choice:{type:'auto',disable_parallel_tool_use:true}})
     .localResult.content.length,1);
@@ -590,7 +615,7 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
   const rereads = configured().localResult.content;
   assert.deepEqual(rereads.map(call => call.input.file_path),
     ['lib/merge.js','lib/objects/load.js','lib/config.js']);
-  assert.deepEqual(rereads.slice(1).map(call => call.input), calls.map(call => call.input));
+  assert.deepEqual(rereads.slice(1).map(call => call.input), calls.slice(0, 2).map(call => call.input));
 });
 test('snapshot context keeps one current read and the latest test outcome', () => {
   const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));

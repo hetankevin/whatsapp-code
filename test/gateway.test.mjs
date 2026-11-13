@@ -114,11 +114,18 @@ test('Claude Code notification checks stay local while other requests reach the 
     assert.match((await result.json()).error.message, /notification status fallback/);
     assert.equal(forwarded, 0);
 
-    assert.equal((await post(base, {tools:[],system:'Give the session a title.'}, headers)).status, 200);
+    const title = await post(base, {tools:[],system:'Give the session a title as JSON.'}, headers);
+    assert.equal(title.status, 200);
+    assert.deepEqual((await title.json()).content, [{type:'text',text:'{"title":"Example"}'}]);
     assert.equal((await post(base, classifier, {'x-claude-code-request-class':'main'})).status, 200);
     assert.equal(forwarded, 2);
   }, async request => {
     forwarded++;
+    if (request.textOnly) {
+      assert.match(request.prompt, /Give the session a title as JSON/);
+      assert.doesNotMatch(request.prompt, /For a tool call|EXACT tool name|current_request/);
+      return parseReply('{"title":"Example"}', request, {matchedTurn:true});
+    }
     return parseReply(reply(request,[{type:'text',text:'ok'}]),request);
   });
 });

@@ -41,7 +41,8 @@ const server = createGateway({
       if (requestClass === 'compaction') {
         compactions++;
         assert.equal(request.validators.size, 0, 'Compaction must be a text-only model request');
-        return reply({type: 'text', text: '<summary>' + summary + '</summary>'});
+        assert.doesNotMatch(request.prompt.split('CURRENT REQUEST:\n')[0], /For a tool call|EXACT tool name/);
+        return parseReply('<summary>' + summary + '</summary>', request, {matchedTurn:true});
       }
       if (afterCompact) {
         assert.ok(request.prompt.includes(summary), 'Claude Code must carry the summary into the next turn');

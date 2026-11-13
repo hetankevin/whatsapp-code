@@ -102,7 +102,9 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
           throw new GatewayError('Use Claude Code’s local notification status fallback.');
         }
       }
-      const request = requestClass === 'compaction'
+      const textRequest = requestClass === 'compaction' ||
+        (requestClass === 'auxiliary' && !body?.tools?.length);
+      const request = textRequest
         ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars)
         : requestClass && requestClass !== 'main'
           ? prepare(body, maxChars)
