@@ -77,7 +77,7 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       const testHeader = req.headers['x-wa-test-command'];
       const rangesHeader = req.headers['x-wa-edit-ranges'];
       if (testHeader || rangesHeader) {
-        if (!editFiles) throw new GatewayError('Verification settings require edit targets.');
+        if (rangesHeader && !editFiles) throw new GatewayError('Read ranges require edit targets.');
         try {
           if (testHeader) editOptions.command = decodeURIComponent(testHeader).trim();
           if (rangesHeader) editOptions.ranges = JSON.parse(decodeURIComponent(rangesHeader));
@@ -104,7 +104,9 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       }
       const request = requestClass === 'compaction'
         ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars)
-        : prepare(body, maxChars, snapshotContext, editFiles, editOptions);
+        : requestClass && requestClass !== 'main'
+          ? prepare(body, maxChars)
+          : prepare(body, maxChars, snapshotContext, editFiles, editOptions);
       if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       if (res.destroyed) return;

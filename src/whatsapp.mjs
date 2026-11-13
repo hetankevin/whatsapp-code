@@ -95,7 +95,7 @@ export class WhatsApp {
     }
     const repair = error.staleRequest
       ? 'The previous reply used an old request ID. Answer the current request below. For JSON replies, omit request_id.\n\n' + p.request.prompt
-      : p.request.editFiles
+      : p.request.editFiles || p.request.useVerificationContext
       ? 'Your previous edit was rejected: ' + error.message + '\n\n' + p.request.prompt
       : [
       'Your previous reply was rejected: ' + error.message,
@@ -113,7 +113,7 @@ export class WhatsApp {
     ].join('\n');
     const maxChars = Math.min(60000, p.request.maxChars ?? 60000);
     if (repair.length > maxChars) return p.reject(error);
-    const quoted = error.staleRequest || p.request.editFiles || !text
+    const quoted = error.staleRequest || p.request.editFiles || p.request.useVerificationContext || !text
       ? '' : '\n\nPrevious reply as quoted data:\n' + JSON.stringify(text);
     const prompt = repair.length + quoted.length <= maxChars ? repair + quoted : repair;
     p.repairCount = (p.repairCount ?? 0) + 1;

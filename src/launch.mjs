@@ -13,8 +13,8 @@ if (!Array.isArray(configuredFiles) || configuredFiles.some(file => typeof file 
   throw new Error('WA_EDIT_FILES must be a JSON array of file paths.');
 }
 const editFiles = configuredFiles.map(file => path.resolve(file));
-if (!editFiles.length && (process.env.WA_TEST_COMMAND || process.env.WA_EDIT_RANGES)) {
-  throw new Error('WA_TEST_COMMAND and WA_EDIT_RANGES require WA_EDIT_FILE or WA_EDIT_FILES.');
+if (!editFiles.length && process.env.WA_EDIT_RANGES) {
+  throw new Error('WA_EDIT_RANGES requires WA_EDIT_FILE or WA_EDIT_FILES.');
 }
 
 const token = await readFile(path.join(stateDir,'gateway-token'),'utf8').then(x=>x.trim()).catch(()=>{console.error('Start the gateway with npm start, then pair WhatsApp first.');process.exit(1);});
@@ -31,12 +31,14 @@ Object.assign(env,{
  CLAUDE_CODE_SUBAGENT_MODEL:'meta-ai-whatsapp',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',
  MAX_THINKING_TOKENS:'0',CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING:'1',API_TIMEOUT_MS:'150000',CLAUDE_CODE_MAX_RETRIES:'0'
 });
+const headers = [];
 if (editFiles.length) {
- const headers = ['x-wa-edit-files: ' + encodeURIComponent(JSON.stringify(editFiles))];
- if (process.env.WA_TEST_COMMAND) headers.push('x-wa-test-command: ' + encodeURIComponent(process.env.WA_TEST_COMMAND));
+ headers.push('x-wa-edit-files: ' + encodeURIComponent(JSON.stringify(editFiles)));
  if (process.env.WA_EDIT_RANGES) headers.push('x-wa-edit-ranges: ' + encodeURIComponent(process.env.WA_EDIT_RANGES));
- env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
-} else {
+}
+if (process.env.WA_TEST_COMMAND) headers.push('x-wa-test-command: ' + encodeURIComponent(process.env.WA_TEST_COMMAND));
+if (headers.length) env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
+if (!editFiles.length) {
  // Leave space for Claude Code's own compaction request below the WhatsApp cap.
  env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ??= '26000';
  env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ??= '2048';

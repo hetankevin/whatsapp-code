@@ -474,6 +474,19 @@ test('a matched reply with later actions applies only the first encoded edit', (
   assert.throws(() => parseReply(first + '\n' + bash, request), /complete protocol/);
 });
 
+test('an edit with a path and no current snapshot only requests a bounded native Read', () => {
+  const request = lineEditRequest();
+  const proposed = 'EDIT src/config.js 70 73 2\n2|replacement();\nEND\n' +
+    JSON.stringify({content:[{type:'tool_use',name:'Bash',input:{command:'npm test'}}]});
+  const response = parseReply(proposed, request, {matchedTurn:true});
+  assert.equal(response.content.length, 1);
+  assert.equal(response.content[0].name, 'Read');
+  assert.deepEqual(response.content[0].input, {file_path:'src/config.js',offset:58,limit:28});
+  assert.throws(() => parseReply(proposed, request), /complete protocol/);
+  assert.throws(() => parseReply(proposed.replace('src/config.js', 'module.js').replace('70 73', '7 9'),
+    request, {matchedTurn:true}), /file already has a current Read/);
+});
+
 test('nested EDIT headers never become source and are unwrapped only for matching metadata', () => {
   const request = lineEditRequest();
   const nonce = request.requestId;
@@ -508,6 +521,66 @@ test('recover a complete EDIT frame inside malformed JSON without changing liter
   assert.throws(() => parseReply(wrap(frame).replace('"EditLines"','"Edit"'),request), /complete protocol/);
 });
 
+test('a configured test verifies discovered edits without fixed files', () => {
+  const tools = ['Read','Edit','Bash'].map(name => ({name,input_schema:{type:'object'}}));
+  const command = 'make check';
+  const options = {command};
+  const messages = [{role:'user',content:'Fix initialization.'}];
+  const turn = () => prepare({tools,messages},60000,false,undefined,options);
+  const record = (call, content, is_error) => messages.push(
+    {role:'assistant',content:[call]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:call.id,content,is_error}]}
+  );
+  const [baseline] = turn().localResult.content;
+  assert.equal(baseline.input.command, command);
+  record(baseline,'1 failing',true);
+  assert.throws(() => parseReply('Tests passed.',turn(),{matchedTurn:true}), /still failing/);
+  assert.throws(() => parseReply('{"content":[{"type":"text","text":"Tests passed."}]}',turn(),
+    {matchedTurn:true}), /still failing/);
+  for (const [id, file_path] of [['r1','caller.js'],['r2','callee.js']]) {
+    record({type:'tool_use',id,name:'Read',input:{file_path}}, '1\tfunction handle() {}');
+  }
+  const request = turn();
+  assert.match(request.prompt, /FILE 1: caller\.js/);
+  assert.match(request.prompt, /FILE 2: callee\.js/);
+  assert.match(request.prompt, /Latest test failure:\n1 failing/);
+  const [proposal, trailing] = parseReply('FILE 2\nREPLACE 1 1\n0|function handle() { return 1; }\nEND\n' +
+    '[{"type":"tool_use","name":"Bash","input":{"command":"make check"}}]',
+    request,{matchedTurn:true}).content;
+  assert.equal(proposal.input.file_path, 'callee.js');
+  assert.equal(trailing, undefined);
+  assert.equal(proposal.input.new_string, 'function handle() { return 1; }');
+  record({type:'tool_use',id:'edit',name:'Edit',input:{file_path:'src.js'}},'Applied');
+  const [retest] = turn().localResult.content;
+  assert.equal(retest.input.command, command);
+  record(retest,'1 passing');
+  assert.match(turn().localResult.content[0].text,/ran make check successfully/);
+});
+
+test('a failed native test reads bounded implementation frames in auto mode', () => {
+  const tools = ['Read','Edit','Bash'].map(name => ({name,input_schema:{type:'object'}}));
+  const messages = [
+    {role:'user',content:'Fix initialization.'},
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'b',input:{command:'npm test'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'b',is_error:true,content:
+      'TypeError: invalid context\n' +
+      '    at load (lib/objects/load.js:582:12)\n' +
+      '    at Object.loadObject (lib/objects/load.js:567:35)\n' +
+      '    at new Config (lib/config.js:70:46)\n' +
+      '    at Context.<anonymous> (tests/config.js:166:34)\n' +
+      '    at Object.run (node_modules/mocha/index.js:25:4)'}]}
+  ];
+  const configured = body => prepare({tools,messages,...body}, 60000, false, undefined, {command:'npm test'});
+  const calls = configured().localResult.content;
+  assert.deepEqual(calls.map(({name,input}) => ({name,input})), [
+    {name:'Read',input:{file_path:'lib/objects/load.js',offset:551,limit:48}},
+    {name:'Read',input:{file_path:'lib/config.js',offset:54,limit:33}}
+  ]);
+  assert.equal(configured({tool_choice:{type:'auto',disable_parallel_tool_use:true}})
+    .localResult.content.length,1);
+  assert.equal(configured({tool_choice:{type:'none'}}).localResult,undefined);
+  assert.equal(prepare({tools,messages}).localResult,undefined);
+});
 test('snapshot context keeps one current read and the latest test outcome', () => {
   const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
   const call = (id, name, input) => ({role: 'assistant', content: [{type: 'tool_use', id, name, input}]});

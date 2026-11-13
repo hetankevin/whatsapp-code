@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { createGateway, root } from '../src/server.mjs';
 import { parseReply } from '../src/protocol.mjs';
 
-const multiFile = process.argv.includes('--verify-files');
+const discoverFiles = process.argv.includes('--verify-discovery');
+const multiFile = discoverFiles || process.argv.includes('--verify-files');
 const verifyEdits = multiFile || process.argv.includes('--verify-edits');
 const testCommand = multiFile ? 'node --test behavior.test.mjs' : 'node --test';
 const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'whatsapp-code-test-')));
@@ -31,8 +32,15 @@ if (verifyEdits) {
     'import assert from "node:assert/strict";',
     'import {value} from "./verified.mjs";',
     ...(multiFile ? ['import {suffix} from "./helper.mjs";'] : []),
-    'test("reports expected result", () => { assert.equal(value, ' + JSON.stringify(expected) + ');' +
-      (multiFile ? ' assert.equal(suffix, "ready");' : '') + ' });'
+    ...(discoverFiles ? [
+      'test("reports expected result", () => {',
+      '  assert.equal(value, ' + JSON.stringify(expected) + ');',
+      '  assert.equal(suffix, "ready");',
+      '});'
+    ] : [
+      'test("reports expected result", () => { assert.equal(value, ' + JSON.stringify(expected) + ');' +
+        (multiFile ? ' assert.equal(suffix, "ready");' : '') + ' });'
+    ])
   ].join('\n'));
 }
 await writeFile(path.join(state, 'gateway-token'), 'test-key');
@@ -45,6 +53,22 @@ const server = createGateway({
     status: 'mock test',
     complete: async request => {
       rounds++;
+      if (discoverFiles) {
+        const response = blocks => JSON.stringify({content:blocks});
+        const read = file_path => ({type:'tool_use',name:'Read',input:{file_path,offset:1,limit:2}});
+        if (!request.editableReads.length) {
+          return parseReply(response([read(target),read(helper)]),request,{matchedTurn:true});
+        }
+        const initial = (await readFile(target,'utf8')).includes('"initial"');
+        const editedFile = initial ? target : helper;
+        const selected = request.editableReads.findIndex(read => read.file_path === editedFile);
+        assert.ok(selected >= 0);
+        assert.match(request.prompt, /not ok 1 - reports expected result/);
+        const replacement = initial ? source : helperSource;
+        const proposal = 'FILE ' + (selected + 1) + '\nREPLACE 1 1\n' + replacement + 'END\n' +
+          '[{"type":"tool_use","name":"Bash","input":{"command":"node --test"}}]';
+        return parseReply(proposal,request,{matchedTurn:true});
+      }
       if (verifyEdits) {
         assert.ok(rounds <= 2, 'Passing tests should end the loop without another model call');
         assert.match(request.prompt, /not ok 1 - reports expected result/);
@@ -108,8 +132,8 @@ try {
     cwd: dir,
     env: {...process.env, WA_STATE_DIR: state, WA_PORT: String(server.address().port),
       WA_EDIT_FILE: verifyEdits && !multiFile ? target : '',
-      WA_EDIT_FILES: multiFile ? JSON.stringify([target, helper]) : '',
-      WA_TEST_COMMAND: multiFile ? testCommand : '', WA_EDIT_RANGES: multiFile ? '[null,[1,1]]' : '',
+      WA_EDIT_FILES: multiFile && !discoverFiles ? JSON.stringify([target, helper]) : '',
+      WA_TEST_COMMAND: multiFile ? testCommand : '', WA_EDIT_RANGES: multiFile && !discoverFiles ? '[null,[1,1]]' : '',
       CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config')},
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -121,10 +145,10 @@ try {
   clearTimeout(timer);
   assert.equal(code, 0, stderr + '\n' + stdout);
   if (verifyEdits) {
-    assert.equal(rounds, 2);
+    assert.equal(rounds, discoverFiles ? 4 : 2);
     assert.equal(await readFile(target, 'utf8'), source);
     if (multiFile) assert.equal(await readFile(helper, 'utf8'), helperSource + '// Outside the edit range.\n');
-    assert.ok(stdout.includes('ran ' + testCommand + ' successfully and reread'));
+    assert.ok(stdout.includes('ran ' + testCommand + ' successfully'));
     console.log('PASS: The harness tested and reread after each edit, then stopped when the tests passed.');
   } else {
     assert.ok(rounds >= 4);
