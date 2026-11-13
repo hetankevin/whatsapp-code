@@ -591,8 +591,17 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
       if (request.editFiles && (/^REPLACE[ \t]/.test(trimmed) || /^(?:FILE[ \t]|\x60{3,}(?!json\b))/i.test(original))) {
         obj = parseBoundEdit(/^REPLACE[ \t]/.test(trimmed) ? trimmed : original, request);
       }
-      else if (/^EDIT[ \t]/.test(trimmed)) obj = parseLineFrame(trimmed);
-      else {
+      else if (/^EDIT[ \t]/.test(trimmed)) {
+        // A consumer reply can include several proposed actions. Only the first
+        // framed edit can use the current Read snapshot. Claude Code sends the
+        // actual result before the model can request any later actions.
+        const boundary = matchedTurn && request.choice.type === 'auto' && !request.editFiles
+          ? /^(END(?:[ \t]+\S+)?)[ \t]*\r?\n(?:[ \t]*\r?\n)*(?=EDIT[ \t]|\{[ \t]*"content"\s*:)/m.exec(trimmed)
+          : null;
+        obj = boundary
+          ? parseLineFrame(trimmed.slice(0, boundary.index + boundary[1].length), true)
+          : parseLineFrame(trimmed);
+      } else {
         try { obj = parseCodeFrame(trimmed); }
         catch {
           try { obj = parseWrappedLineFrame(trimmed); }

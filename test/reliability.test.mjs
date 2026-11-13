@@ -457,6 +457,23 @@ test('mixed EDIT indentation markers cannot be written into the source', () => {
   assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
 });
 
+test('a matched reply with later actions applies only the first encoded edit', () => {
+  const request = lineEditRequest();
+  const handle = request.editableReads[0].read_id;
+  const first = 'EDIT ' + handle + ' 8 8\n2|return "new";\nEND';
+  const second = 'EDIT ' + handle + ' 9 9\n0|later();\nEND';
+  const bash = JSON.stringify({content:[{type:'tool_use',name:'Bash',input:{command:'npm test'}}]});
+  for (const tail of [bash, second, '\n' + second + '\n' + bash]) {
+    const [edit, later] = parseReply(first + '\n' + tail, request, {matchedTurn:true}).content;
+    assert.equal(edit.name, 'Edit');
+    assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
+    assert.equal(later, undefined);
+  }
+  assert.throws(() => parseReply(first.replace(handle, 'r000000000000') + '\n' + bash,
+    request, {matchedTurn:true}), /current Read snapshot/);
+  assert.throws(() => parseReply(first + '\n' + bash, request), /complete protocol/);
+});
+
 test('nested EDIT headers never become source and are unwrapped only for matching metadata', () => {
   const request = lineEditRequest();
   const nonce = request.requestId;
