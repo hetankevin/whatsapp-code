@@ -70,6 +70,8 @@ The device database, gateway token, and pairing page stay in local application s
 | WA_SNAPSHOT_CONTEXT | off | Set to 1 on the server to try single-file snapshot context |
 | WA_EDIT_FILE | unset | Single file to edit with automatic Node test runs. Set on the launcher. |
 | WA_EDIT_FILES | unset | JSON array of up to eight existing file paths for automatic verification. Set on the launcher. |
+| WA_TEST_COMMAND | node --test | Exact command for the launcher’s automatic verification mode. Claude Code applies its Bash permissions. |
+| WA_EDIT_RANGES | unset | JSON array in edit target order. Use a one-based [offset, limit] pair to read a fixed excerpt or null to read the whole file. |
 | GO_BINARY | go | Compiler for npm run build |
 
 Supported explicit bot addresses are defined by whatsmeow: 1807055946647697@bot (Muse), 867051314767696@bot (Meta AI), and 13135550002@s.whatsapp.net (legacy). An override does not establish account eligibility.

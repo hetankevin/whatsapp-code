@@ -73,6 +73,24 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
           throw new GatewayError('Supply one to eight distinct absolute edit paths.');
         }
       }
+      const editOptions = {};
+      const testHeader = req.headers['x-wa-test-command'];
+      const rangesHeader = req.headers['x-wa-edit-ranges'];
+      if (testHeader || rangesHeader) {
+        if (!editFiles) throw new GatewayError('Verification settings require edit targets.');
+        try {
+          if (testHeader) editOptions.command = decodeURIComponent(testHeader).trim();
+          if (rangesHeader) editOptions.ranges = JSON.parse(decodeURIComponent(rangesHeader));
+        } catch { throw new GatewayError('Invalid verification settings.'); }
+        if (testHeader && (!editOptions.command || /[\x00-\x1f]/.test(editOptions.command))) {
+          throw new GatewayError('Supply a single-line test command.');
+        }
+        if (rangesHeader && (!Array.isArray(editOptions.ranges) || editOptions.ranges.length !== editFiles.length ||
+            editOptions.ranges.some(range => range !== null && (!Array.isArray(range) || range.length !== 2 ||
+              !range.every(value => Number.isSafeInteger(value) && value > 0))))) {
+          throw new GatewayError('Supply one [offset, limit] pair or null per edit target.');
+        }
+      }
       const requestClass = req.headers['x-claude-code-request-class'];
       if (requestClass === 'auxiliary' && !body?.tools?.length) {
         const system = Array.isArray(body?.system)
@@ -86,7 +104,7 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       }
       const request = requestClass === 'compaction'
         ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars)
-        : prepare(body, maxChars, snapshotContext, editFiles);
+        : prepare(body, maxChars, snapshotContext, editFiles, editOptions);
       if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       if (res.destroyed) return;

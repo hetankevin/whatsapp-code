@@ -1,9 +1,10 @@
 // Track test failures until the user or a potentially mutating tool changes the context.
 const READ_ONLY = new Set(['Read', 'Glob', 'Grep']);
 
-export function testCommand(tool) {
+export function testCommand(tool, configuredCommand) {
   if (tool?.name !== 'Bash' || typeof tool.input?.command !== 'string') return null;
   const command = tool.input.command.trim();
+  if (command === configuredCommand) return command;
   // Only recognize standalone test invocations. Shell pipelines and compound
   // commands can change the workspace, so they clear prior test failures.
   if (/[;&|<>()\x60$\r\n]/.test(command)) return null;
@@ -23,7 +24,7 @@ function failureExcerpt(content) {
   return lines.slice(start, start + 16).join('\n').slice(0, 1000);
 }
 
-export function testState(messages) {
+export function testState(messages, configuredCommand) {
   let latestFailure;
   const failures = new Map();
   const pending = new Map();
@@ -31,13 +32,13 @@ export function testState(messages) {
     const blocks = Array.isArray(message.content) ? message.content : [];
     if (message.role === 'assistant') {
       const calls = blocks.filter(block => block.type === 'tool_use');
-      if (calls.some(call => !READ_ONLY.has(call.name) && !testCommand(call))) {
+      if (calls.some(call => !READ_ONLY.has(call.name) && !testCommand(call, configuredCommand))) {
         failures.clear();
         pending.clear();
         continue;
       }
       for (const call of calls) {
-        const command = testCommand(call);
+        const command = testCommand(call, configuredCommand);
         if (command) pending.set(call.id, command);
       }
     } else if (message.role === 'user') {

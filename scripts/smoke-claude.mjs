@@ -11,6 +11,7 @@ import { parseReply } from '../src/protocol.mjs';
 
 const multiFile = process.argv.includes('--verify-files');
 const verifyEdits = multiFile || process.argv.includes('--verify-edits');
+const testCommand = multiFile ? 'node --test behavior.test.mjs' : 'node --test';
 const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'whatsapp-code-test-')));
 const state = path.join(dir, 'state');
 const target = path.join(dir, 'verified.mjs');
@@ -23,7 +24,7 @@ const source = verifyEdits ? 'export const value = ' + JSON.stringify(expected) 
   : 'console.log("' + expected + '");\n';
 await mkdir(state);
 await writeFile(target, verifyEdits ? 'export const value = "initial"; // ' + secret + '\n' : original);
-if (multiFile) await writeFile(helper, 'export const suffix = "pending";\n');
+if (multiFile) await writeFile(helper, 'export const suffix = "pending";\n// Outside the edit range.\n');
 if (verifyEdits) {
   await writeFile(path.join(dir, 'behavior.test.mjs'), [
     'import test from "node:test";',
@@ -47,6 +48,7 @@ const server = createGateway({
       if (verifyEdits) {
         assert.ok(rounds <= 2, 'Passing tests should end the loop without another model call');
         assert.match(request.prompt, /not ok 1 - reports expected result/);
+        if (multiFile) assert.equal(request.editableReads[1].end_line, 1);
         const expectedSnapshot = rounds === 1 ? secret : multiFile ? source.trimEnd() : '"still wrong"';
         assert.ok(request.prompt.includes(expectedSnapshot), `Unexpected snapshot on proposal ${rounds}: ${request.prompt}`);
         assert.equal(request.editableReads.length, multiFile ? 2 : 1);
@@ -100,13 +102,15 @@ try {
   const child = spawn(process.execPath, [
     path.join(root, 'src/launch.mjs'), '--print', '--no-session-persistence',
     '--restricted', '--tools', 'Read,Edit,Bash', '--permission-mode', 'dontAsk',
-    '--allowedTools', 'Read', 'Edit', verifyEdits ? 'Bash(node --test)' : 'Bash(node verified.mjs)', '--',
+    '--allowedTools', 'Read', 'Edit', verifyEdits ? 'Bash(' + testCommand + ')' : 'Bash(node verified.mjs)', '--',
     'Read the fixture, write a small program, and run it.'
   ], {
     cwd: dir,
     env: {...process.env, WA_STATE_DIR: state, WA_PORT: String(server.address().port),
       WA_EDIT_FILE: verifyEdits && !multiFile ? target : '',
-      WA_EDIT_FILES: multiFile ? JSON.stringify([target, helper]) : '', CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config')},
+      WA_EDIT_FILES: multiFile ? JSON.stringify([target, helper]) : '',
+      WA_TEST_COMMAND: multiFile ? testCommand : '', WA_EDIT_RANGES: multiFile ? '[null,[1,1]]' : '',
+      CLAUDE_CONFIG_DIR: path.join(dir, 'claude-config')},
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stdout = '', stderr = '';
@@ -119,8 +123,8 @@ try {
   if (verifyEdits) {
     assert.equal(rounds, 2);
     assert.equal(await readFile(target, 'utf8'), source);
-    if (multiFile) assert.equal(await readFile(helper, 'utf8'), helperSource);
-    assert.match(stdout, /ran node --test successfully and reread (?:the file|the selected files)/);
+    if (multiFile) assert.equal(await readFile(helper, 'utf8'), helperSource + '// Outside the edit range.\n');
+    assert.ok(stdout.includes('ran ' + testCommand + ' successfully and reread'));
     console.log('PASS: The harness tested and reread after each edit, then stopped when the tests passed.');
   } else {
     assert.ok(rounds >= 4);

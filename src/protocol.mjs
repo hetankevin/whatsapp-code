@@ -325,7 +325,7 @@ function latestTaskIndex(messages) {
       !message.content.some(block => block.type === 'tool_result'))));
 }
 
-function latestToolStatus(messages) {
+function latestToolStatus(messages, configuredCommand) {
   const last = messages.at(-1);
   if (last?.role !== 'user' || !Array.isArray(last.content)) return undefined;
   const results = last.content.filter(block => block.type === 'tool_result');
@@ -337,7 +337,7 @@ function latestToolStatus(messages) {
     return call ? [{
       tool: call.name,
       file_path: call.input?.file_path,
-      command: testCommand(call) ?? undefined,
+      command: testCommand(call, configuredCommand) ?? undefined,
       status: result.is_error ? 'failed' : 'succeeded'
     }] : [];
   });
@@ -375,10 +375,15 @@ function retryEmptyGrep(messages, validate, model) {
 }
 
 // Reconstruct the edit loop from Claude Code's tool results on every turn.
-function nextEditStep(messages, validators, editFiles, model) {
-  const test = {name: 'Bash', input: {command: 'node --test', description: 'Run project tests'}};
-  const read = index => ({name: 'Read', input: {file_path: editFiles[index]}});
-  const [last] = latestToolStatus(messages) ?? [];
+function nextEditStep(messages, validators, editFiles, model, {command = 'node --test', ranges}) {
+  const test = {name: 'Bash', input: {command, description: 'Run project tests'}};
+  const read = index => {
+    const input = {file_path: editFiles[index]};
+    const range = ranges?.[index];
+    if (range) [input.offset, input.limit] = range;
+    return {name: 'Read', input};
+  };
+  const [last] = latestToolStatus(messages, command) ?? [];
   const readIndex = last?.tool === 'Read' ? editFiles.indexOf(last.file_path) : -1;
   let action;
   if (messages.length === 1 || (last?.tool === 'Edit' && last.status === 'succeeded')) {
@@ -388,11 +393,11 @@ function nextEditStep(messages, validators, editFiles, model) {
   } else if (readIndex >= 0 && last.status === 'succeeded' && readIndex + 1 < editFiles.length) {
     action = read(readIndex + 1);
   } else if (readIndex >= 0 && last.status === 'succeeded') {
-    const [tested] = latestToolStatus(messages.slice(0, -2 * editFiles.length)) ?? [];
+    const [tested] = latestToolStatus(messages.slice(0, -2 * editFiles.length), command) ?? [];
     if (tested?.command !== test.input.command) throw new GatewayError('Expected a test result before the current read.', 502);
     if (tested.status === 'succeeded') {
       const target = editFiles.length === 1 ? 'the file' : 'the selected files';
-      return assistantMessage(model, [{type: 'text', text: 'The harness ran node --test successfully and reread ' + target + '.'}]);
+      return assistantMessage(model, [{type: 'text', text: 'The harness ran ' + command + ' successfully and reread ' + target + '.'}]);
     }
     const edits = messages.flatMap(message => message.role === 'assistant' && Array.isArray(message.content)
       ? message.content.filter(block => block.type === 'tool_use' && block.name === 'Edit') : []);
@@ -437,7 +442,7 @@ function withoutStockAttribution(messages) {
   });
 }
 
-export function prepare(body, maxChars = 60000, snapshotContext = false, editFiles) {
+export function prepare(body, maxChars = 60000, snapshotContext = false, editFiles, editOptions = {}) {
   if (!Array.isArray(body.messages) || !body.messages.length) throw new GatewayError('messages must be a nonempty array.');
   const transcript = withoutStockAttribution(body.messages);
   if (!transcript.length) throw new GatewayError('messages must contain a user task or conversation.');
@@ -479,7 +484,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     return {read_id, file_path:filePath, start_line:first, end_line:first + lines.length - 1};
   });
   const modelTools = rangeEnabled ? tools.filter(tool => tool.name !== 'Edit') : tools;
-  const {failures, latestFailure} = testState(taskMessages);
+  const {failures, latestFailure} = testState(taskMessages, editOptions.command);
   const testFailures = choice.type === 'auto' ? failures : new Map();
   const readIds = new Set();
   const messages = transcript.map(m => {
@@ -497,7 +502,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     if (localResult) return {localResult};
   }
   if (editFiles) {
-    const localResult = nextEditStep(taskMessages, validators, editFiles, model);
+    const localResult = nextEditStep(taskMessages, validators, editFiles, model, editOptions);
     if (localResult) return {localResult};
     if (editableReads.length !== editFiles.length ||
         editableReads.some((read, index) => read.file_path !== editFiles[index])) {
@@ -557,7 +562,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       multipleFiles
         ? 'Choose one file to edit. Start your reply with FILE and its number, for example FILE 1. Then give one Markdown code block replacing all displayed lines of that file.'
         : 'Return a single Markdown code block with replacement source for all displayed lines.',
-      'Keep indentation. Use only source code inside the block. Omit source line numbers, request IDs, JSON, and prose.'
+      'Replace only the displayed lines. Keep their indentation and include closing braces only when they are inside the displayed excerpt. Omit source line numbers, request IDs, JSON, and prose.'
     ].join('\n');
     const fileSources = [...snapshots.values()].map((snapshot, index) =>
       (multipleFiles ? 'FILE ' + (index + 1) + ': ' : 'Current file: ') +
