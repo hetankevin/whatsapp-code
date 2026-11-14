@@ -175,8 +175,10 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
     env.update(case.get('env', {}))
     if CONTEXT_TOKENS:
         env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'] = str(CONTEXT_TOKENS)
+    # Allow the exact command plus the project's test runner as a prefix rule,
+    # so a re-quoted or narrowed test invocation is not denied. Nothing else.
     tools = ['--permission-mode', 'dontAsk', '--allowedTools', 'Glob', 'Grep', 'Read', 'Edit', 'Write',
-             f'Bash({command})', *[f'Bash({c})' for c in case.get('allow_bash', [])]]
+             f'Bash({command})', f'Bash({case["cmd"][0]}:*)', *[f'Bash({c})' for c in case.get('allow_bash', [])]]
     launcher = str(Path(os.environ.get('WA_EVAL_LAUNCHER', ROOT / 'src/launch.mjs')))
     begin = time.time()
     timed_out, session, exit_code = False, None, None
