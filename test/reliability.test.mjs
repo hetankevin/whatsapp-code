@@ -975,6 +975,10 @@ test('bare tool arrays and JSON line edits use the ordinary validation path', ()
   const json = read_id => JSON.stringify({content: [{type: 'tool_use', name: 'Edit',
     input: {read_id, start: 8, end: 8, replacement: '  return "new";'}}]});
   const [edit] = parseReply(json('read-x'), request, {matchedTurn: true}).content;
+  const wrapped = '[' + JSON.stringify({content: [{type: 'tool_use', name: 'Bash', input: {command: 'node --test'}}]}) + ']';
+  assert.equal(parseReply(wrapped, plain, {matchedTurn: true}).content[0].name, 'Bash');
+  const aliased = JSON.stringify({content: [{type: 'tool_use', name: 'Edit', input: {read_id: 'read-x', start_line: 8, end_line: 8, replacement_code: '  return "new";'}}]});
+  assert.equal(parseReply(aliased, request, {matchedTurn: true}).content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
   assert.equal(edit.name, 'Edit');
   assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
   // A range beyond the excerpt reads those lines of the same file first.
@@ -1097,4 +1101,25 @@ test('an EDIT after a prose line and fenced JSON after prose are recovered', () 
   assert.equal(parseReply(fenced, plain, {matchedTurn: true}).content[0].input.pattern, 'load\\(');
   const fencedBash = 'Run it.\n\n```\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}\n```';
   assert.throws(() => parseReply(fencedBash, plain, {matchedTurn: true}), /protocol JSON|unknown/);
+});
+
+test('an oversized WhatsApp view omits the oldest tool outputs, not the task or latest result', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const big = tag => Array.from({length: 60}, (_, i) => (i + 1) + '\t' + tag + ' line ' + 'x'.repeat(40)).join('\n');
+  const messages = [{role: 'user', content: 'Fix the parser.'}];
+  for (const id of ['r1', 'r2', 'r3', 'r4']) {
+    messages.push({role: 'assistant', content: [{type: 'tool_use', id, name: 'Read', input: {file_path: id + '.js'}}]},
+      {role: 'user', content: [{type: 'tool_result', tool_use_id: id, content: big(id)}]});
+  }
+  const full = prepare({tools, messages});
+  const limit = full.prompt.length - 5000;
+  const fitted = prepare({tools, messages}, limit);
+  assert.ok(fitted.prompt.length <= limit);
+  assert.match(fitted.prompt, /Earlier tool output omitted/);
+  assert.match(fitted.prompt, /Fix the parser\./);
+  assert.match(fitted.prompt, /r4 line/);
+  assert.doesNotMatch(fitted.prompt, /r1 line/);
+  assert.ok(!fitted.editableReads.some(read => read.file_path === 'r1.js'));
+  assert.ok(fitted.editableReads.some(read => read.file_path === 'r4.js'));
+  assert.throws(() => prepare({tools, messages}, 3000), /configured WhatsApp limit/);
 });
