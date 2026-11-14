@@ -1108,13 +1108,6 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       ].join('\n');
     const rangeGuide = rangeEnabled ? [
       'To edit a file, reply with FILE: and its path on one line, then the original lines in one code block and the replacement lines in a second code block. Copy the original lines from a current Read result, without line numbers, including whole statements; the gateway finds them and Claude Code applies the change. Repeat the FILE section for several changes. If the file has no current Read, call Read first.',
-      'FILE: path/to/file.js',
-      '\x60\x60\x60',
-      'original lines',
-      '\x60\x60\x60',
-      '\x60\x60\x60',
-      'replacement lines',
-      '\x60\x60\x60',
       'A line-range edit is also accepted: use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. After a successful EDIT, its result shows the current lines with a new read_id. Other edits or writes make prior reads of that file ineligible.',
       'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, put END immediately after the header on its own line.',
       'If the replacement includes an entire multiline statement, select all its original lines. To move a statement within one excerpt, select a range that covers both locations and include the moved statement once.',
@@ -1383,8 +1376,19 @@ function parseSearchReplace(text, request, finalAttempt) {
   const heads = [...text.matchAll(/^[ \t]*FILE:[ \t]*\x60?([^\s\x60]+)\x60?[ \t]*$/gm)];
   if (!heads.length) return;
   const changes = heads.map((head, index) => {
-    const section = text.slice(head.index + head[0].length, heads[index + 1]?.index ?? text.length);
-    const blocks = [...section.matchAll(/^[ \t]*\x60{3,}[^\n]*\n([\s\S]*?)\n[ \t]*\x60{3,}[ \t]*$/gm)].map(match => match[1]);
+    let section = text.slice(head.index + head[0].length, heads[index + 1]?.index ?? text.length);
+    // Only the first action counts: stop at a later EDIT frame or JSON envelope.
+    const later = section.search(/^[ \t]*(?:EDIT[ \t]|\{\s*"content"|\[\s*\{\s*"type")/m);
+    if (later >= 0) section = section.slice(0, later);
+    const blocks = [...section.matchAll(/^[ \t]*\x60{3,}[^\n]*\n([\s\S]*?)\n[ \t]*\x60{3,}[ \t]*$/gm)]
+      .map(match => match[1].replace(/^[ \t]*(?:original|replacement)(?: lines?)?:?[ \t]*(?:\n|$)/i, ''))
+      // Line numbers copied from the Read display are not source.
+      .map(block => {
+        const lines = block.split('\n');
+        const numbered = lines.filter(line => line.trim());
+        return numbered.length && numbered.every(line => /^[ \t]*\d+(?:\t| {1,2})/.test(line))
+          ? lines.map(line => line.replace(/^[ \t]*\d+(?:\t| {1,2})/, '')).join('\n') : block;
+      });
     return {path: head[1], original: blocks[0], replacement: blocks[1]};
   });
   if (changes.some(change => change.original === undefined || change.replacement === undefined)) {
@@ -1473,8 +1477,10 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   }
   const read = matchedTurn && readBeforePathEdit(trimmed, request);
   if (read) return assistantMessage(request.model, [read], usage);
+  const fileAt = trimmed.search(/^[ \t]*FILE:[ \t]*\S/m);
+  const otherAt = trimmed.search(/^[ \t]*(?:EDIT[ \t]|\{\s*"content"|\[\s*\{\s*"type")/m);
   if (matchedTurn && request.validateLineEdit && request.choice.type === 'auto' && !request.editFiles &&
-      !request.useVerificationContext && /^[ \t]*FILE:[ \t]*\S/m.test(trimmed) && !/^[ \t]*EDIT[ \t]/m.test(trimmed)) {
+      !request.useVerificationContext && fileAt >= 0 && (otherAt < 0 || fileAt < otherAt)) {
     let searched;
     try { searched = parseSearchReplace(trimmed, request, finalAttempt); }
     catch (error) {

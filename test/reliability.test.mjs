@@ -1313,3 +1313,20 @@ test('FILE search-and-replace edits are anchored in the current Read ignoring wh
   const [readFirst] = parseReply('FILE: lib/other.js\n' + fence + '\na();\n' + fence + '\n' + fence + '\nb();\n' + fence, request, {matchedTurn: true}).content;
   assert.deepEqual([readFirst.name, readFirst.input], ['Read', {file_path: 'lib/other.js', offset: 1, limit: 400}]);
 });
+
+test('a FILE section is used when it comes first, even if the reply continues with other formats', () => {
+  const request = lineEditRequest();
+  const fence = '\x60\x60\x60';
+  const reply = 'FILE: module.js\n' + fence + '\noriginal lines\nreturn "old";\n' + fence + '\n' + fence + '\nreplacement lines\nreturn "new";\n' + fence +
+    '\nEDIT ' + request.editableReads[0].read_id + ' 7 7\nconst a = 2;\nEND\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
+  const {content} = parseReply(reply, request, {matchedTurn: true});
+  assert.equal(content.length, 1);
+  assert.equal(content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+});
+
+test('line numbers copied into a FILE block are removed', () => {
+  const request = lineEditRequest();
+  const fence = '\x60\x60\x60';
+  const reply = 'FILE: module.js\n' + fence + '\n 8 return "old";\n 9 }\n' + fence + '\n' + fence + '\n  return "new";\n}\n' + fence;
+  assert.equal(parseReply(reply, request, {matchedTurn: true}).content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+});
