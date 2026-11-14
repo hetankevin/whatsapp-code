@@ -23,7 +23,9 @@ function numberedRead(text) {
     if (!match) return null;
     const line = Number(match[1]);
     first ??= line;
-    if (!Number.isSafeInteger(line) || line < 1 || line !== first + lines.length) return null;
+    // Claude Code labels an offset-0 Read from line 0. Edits bind to positions
+    // in the observed excerpt, so the labels only need to be consecutive.
+    if (!Number.isSafeInteger(line) || line < 0 || line !== first + lines.length) return null;
     lines.push(match[2]);
   }
   return lines.length ? {first, lines} : null;
@@ -39,15 +41,25 @@ const sameFile = (a, b) => a === b || path.basename(a) === path.basename(b);
 
 function trackReads(messages, keepDisjoint = false, perFile = false) {
   const pending = new Map();
+  const mutations = new Map();
   const snapshots = new Map();
+  const dropFile = target => {
+    for (const [id, snapshot] of snapshots) {
+      if (typeof target !== 'string' || sameFile(snapshot.filePath, target)) snapshots.delete(id);
+    }
+    for (const [id, filePath] of pending) {
+      if (typeof target !== 'string' || sameFile(filePath, target)) pending.delete(id);
+    }
+  };
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
     if (message.role === 'assistant') {
       const calls = message.content.filter(block => block.type === 'tool_use');
-      // In the default mode an edit or write invalidates reads of its file and
-      // shell commands keep snapshots: each line edit sends the whole observed excerpt as the
-      // native Edit old_string, so Claude Code rejects it if a command changed
-      // that source. Any other tool conservatively invalidates everything.
+      // In the default mode, shell commands keep snapshots: each line edit
+      // sends the whole observed excerpt as the native Edit old_string, so
+      // Claude Code rejects it if a command changed that source. Edits and
+      // writes are settled when their results arrive. Any other tool
+      // conservatively invalidates everything.
       if (calls.some(call => !READ_ONLY_TOOLS.has(call.name) &&
           (!perFile || !['Bash', 'Edit', 'Write'].includes(call.name)))) {
         pending.clear();
@@ -55,14 +67,7 @@ function trackReads(messages, keepDisjoint = false, perFile = false) {
         continue;
       }
       for (const call of calls) {
-        if (!['Edit', 'Write'].includes(call.name)) continue;
-        const target = call.input?.file_path;
-        for (const [id, snapshot] of snapshots) {
-          if (typeof target !== 'string' || sameFile(snapshot.filePath, target)) snapshots.delete(id);
-        }
-        for (const [id, filePath] of pending) {
-          if (typeof target !== 'string' || sameFile(filePath, target)) pending.delete(id);
-        }
+        if (['Edit', 'Write'].includes(call.name)) mutations.set(call.id, call);
       }
       for (const call of calls) {
         if (call.name === 'Read' && typeof call.input?.file_path === 'string') {
@@ -71,7 +76,49 @@ function trackReads(messages, keepDisjoint = false, perFile = false) {
       }
     } else if (message.role === 'user') {
       for (const result of message.content) {
-        if (result.type !== 'tool_result' || !pending.has(result.tool_use_id)) continue;
+        if (result.type !== 'tool_result') continue;
+        const mutation = mutations.get(result.tool_use_id);
+        if (mutation) {
+          mutations.delete(result.tool_use_id);
+          // A failed native Edit or Write leaves the file unchanged.
+          if (result.is_error) continue;
+          const {file_path: target, old_string, new_string} = mutation.input ?? {};
+          // A gateway line edit replaced one whole observed excerpt, so its
+          // new text and position are known exactly after a successful Edit.
+          const source = mutation.name === 'Edit' && mutation.id?.startsWith('toolu_lines_') &&
+            typeof old_string === 'string' && typeof new_string === 'string'
+            ? [...snapshots].find(([, snapshot]) => sameFile(snapshot.filePath, target) &&
+                snapshot.lines.join('\n') === old_string)
+            : undefined;
+          if (!source) { dropFile(target); continue; }
+          const [sourceId, edited] = source;
+          const lines = new_string.split('\n');
+          const last = edited.first + edited.lines.length;
+          const delta = lines.length - edited.lines.length;
+          for (const [id, snapshot] of snapshots) {
+            if (id === sourceId || !sameFile(snapshot.filePath, edited.filePath)) continue;
+            if (snapshot.first >= last) snapshots.set(id, {...snapshot, first: snapshot.first + delta});
+            else if (snapshot.first + snapshot.lines.length > edited.first) snapshots.delete(id);
+          }
+          for (const [id, filePath] of pending) {
+            if (sameFile(filePath, edited.filePath)) pending.delete(id);
+          }
+          snapshots.delete(sourceId);
+          // Keep the changed lines plus a little context as the new excerpt.
+          let prefix = 0;
+          while (prefix < Math.min(lines.length, edited.lines.length) && lines[prefix] === edited.lines[prefix]) prefix++;
+          let suffix = 0;
+          while (suffix < Math.min(lines.length, edited.lines.length) - prefix &&
+                 lines[lines.length - 1 - suffix] === edited.lines[edited.lines.length - 1 - suffix]) suffix++;
+          const from = Math.max(0, prefix - 3);
+          const to = Math.min(lines.length, lines.length - suffix + 3);
+          const window = lines.slice(from, to);
+          if (window.length && window.join('\n').length <= 6000) {
+            snapshots.set(result.tool_use_id, {first: edited.first + from, lines: window, filePath: edited.filePath, edited: true});
+          }
+          continue;
+        }
+        if (!pending.has(result.tool_use_id)) continue;
         const filePath = pending.get(result.tool_use_id);
         pending.delete(result.tool_use_id);
         const output = result.content;
@@ -88,6 +135,7 @@ function trackReads(messages, keepDisjoint = false, perFile = false) {
       }
     }
   }
+  // Without per-file tracking, any edit or write invalidates everything.
   return snapshots;
 }
 
@@ -127,8 +175,8 @@ const lineEditInputSchema = {
   type: 'object',
   properties: {
     read_id: {type: 'string'},
-    start_line: {type: 'integer', minimum: 1},
-    end_line: {type: 'integer', minimum: 1},
+    start_line: {type: 'integer', minimum: 0},
+    end_line: {type: 'integer', minimum: 0},
     new_string: {type: 'string'}
   },
   required: ['read_id', 'start_line', 'end_line', 'new_string'],
@@ -187,8 +235,9 @@ function resolveLineEdit(input, request) {
   if (!snapshot) {
     const guidance = request.editFiles
       ? 'Send the replacement code block for the current displayed excerpt.'
-      : 'Use a read_id from editable_reads or call Read again. Current: ' +
-        (request.editableReads.map(read => read.read_id + ' ' + read.file_path + ' ' + read.start_line + '-' + read.end_line).join('; ') || 'none') + '.';
+      : 'Use a read_id from editable_reads. Current: ' +
+        (request.editableReads.map(read => read.read_id + ' ' + read.file_path + ' ' + read.start_line + '-' + read.end_line).join('; ') || 'none') +
+        '. Without a current excerpt, put the file path in place of the read_id (EDIT path/to/file.js START END) and the gateway will Read those lines first.';
     throw repairableError('EditLines needs a current Read snapshot. ' + guidance);
   }
   const contains = excerpt => start_line >= excerpt.first && end_line >= start_line &&
@@ -244,7 +293,7 @@ function changedLines(before, after) {
   };
 }
 
-function content(blocks, readIds, snapshots) {
+function content(blocks, readIds, snapshots, editedView) {
   if (typeof blocks === 'string') return blocks;
   if (!Array.isArray(blocks)) throw new GatewayError('Expected text or content blocks.');
   return blocks.map(b => {
@@ -264,6 +313,11 @@ function content(blocks, readIds, snapshots) {
         result = typeof result === 'string'
           ? withoutReadLabels(result)
           : result.map(block => block.type === 'text' ? {...block, text: withoutReadLabels(block.text)} : block);
+      }
+      const view = !b.is_error && editedView?.(b.tool_use_id);
+      if (view) {
+        result = typeof result === 'string' ? result + '\n' + view
+          : [...result, {type: 'text', text: view}];
       }
       return {type: b.type, tool_use_id: b.tool_use_id, is_error: !!b.is_error, content: result};
     }
@@ -766,6 +820,16 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     readHandles.set(read_id, id);
     return {read_id, file_path:filePath, start_line:first, end_line:first + lines.length - 1};
   });
+  const handleOf = new Map([...readHandles].map(([handle, id]) => [id, handle]));
+  // After a successful line edit, show the current numbered lines with a
+  // fresh read_id, so a follow-up edit needs no extra Read.
+  const editedView = id => {
+    const snapshot = snapshots.get(id);
+    if (!snapshot?.edited || !handleOf.has(id)) return;
+    return 'Current lines ' + snapshot.first + '-' + (snapshot.first + snapshot.lines.length - 1) +
+      ' of ' + snapshot.filePath + ' after this edit (read_id ' + handleOf.get(id) + '):\n' +
+      snapshot.lines.map((line, index) => (snapshot.first + index) + '\t' + line).join('\n');
+  };
   const modelTools = rangeEnabled ? tools.filter(tool => tool.name !== 'Edit') : tools;
   const {failures, latestFailure, previousFailure} = testState(taskMessages, editOptions.command);
   const testFailures = choice.type === 'auto' ? failures : new Map();
@@ -786,7 +850,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
         if (block.type === 'tool_use' && block.name === 'Read') readIds.add(block.id);
       }
     }
-    return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined, snapshots)};
+    return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined, snapshots, editedView)};
   });
   const model = body.model ?? 'meta-ai-whatsapp';
   if (choice.type === 'auto' && !editFiles) {
@@ -855,7 +919,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       JSON.stringify(payload)
     ].join('\n');
   const rangeGuide = rangeEnabled ? [
-    'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. Editing or writing a file makes its prior reads ineligible, so Read it again before the next edit to that file.',
+    'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. After a successful EDIT, its result shows the current lines with a new read_id. Other edits or writes make prior reads of that file ineligible.',
     'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, put END immediately after the header on its own line.',
     'If the replacement includes an entire multiline statement, select all its original lines. To move a statement within one excerpt, select a range that covers both locations and include the moved statement once.',
     'EDIT READ_ID START END_LINE',

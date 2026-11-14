@@ -972,3 +972,45 @@ test('bare tool arrays and JSON line edits use the ordinary validation path', ()
   assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
   assert.throws(() => parseReply(json('read-x').replace('"end":8', '"end":12'), request, {matchedTurn: true}), /outside/);
 });
+
+test('a successful line edit leaves a current excerpt for the next edit', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const source = Array.from({length: 20}, (_, i) => 'line ' + (i + 1) + ';');
+  const read = {role: 'assistant', content: [{type: 'tool_use', id: 'read-a', name: 'Read', input: {file_path: 'a.js', offset: 1, limit: 20}}]};
+  const readResult = {role: 'user', content: [{type: 'tool_result', tool_use_id: 'read-a',
+    content: source.map((line, i) => (i + 1) + '\t' + line).join('\n')}]};
+  const later = {role: 'assistant', content: [{type: 'tool_use', id: 'read-b', name: 'Read', input: {file_path: 'b.js'}}]};
+  const laterResult = {role: 'user', content: [{type: 'tool_result', tool_use_id: 'read-b', content: '1\tother();'}]};
+  const base = [{role: 'user', content: 'Fix it.'}, read, readResult, later, laterResult];
+  const first = prepare({tools, messages: base});
+  const handle = first.editableReads.find(r => r.file_path === 'a.js').read_id;
+  const [edit] = parseReply('EDIT ' + handle + ' 10 10\nline 10a;\nline 10b;\nEND', first, {matchedTurn: true}).content;
+  const ok = {role: 'user', content: [{type: 'tool_result', tool_use_id: edit.id, content: 'The file a.js has been updated successfully.'}]};
+  const next = prepare({tools, messages: [...base, {role: 'assistant', content: [edit]}, ok]});
+  const current = next.editableReads.find(r => r.file_path === 'a.js');
+  assert.deepEqual([current.start_line, current.end_line], [7, 14]);
+  assert.ok(next.editableReads.some(r => r.file_path === 'b.js'), 'other files stay current');
+  assert.match(next.prompt, /Current lines 7-14 of a\.js after this edit \(read_id r[0-9a-f]{12}\):\\n7\\tline 7;/);
+  const [second] = parseReply('EDIT ' + current.read_id + ' 11 11\nline 10c;\nEND', next, {matchedTurn: true}).content;
+  assert.equal(second.input.old_string, ['line 7;','line 8;','line 9;','line 10a;','line 10b;','line 11;','line 12;','line 13;'].join('\n'));
+  assert.equal(second.input.new_string, ['line 7;','line 8;','line 9;','line 10a;','line 10c;','line 11;','line 12;','line 13;'].join('\n'));
+  // The old handle is gone, and a failed edit changes nothing.
+  assert.throws(() => parseReply('EDIT ' + handle + ' 3 3\nx;\nEND', next, {matchedTurn: true}), /current Read snapshot/);
+  const failed = {role: 'user', content: [{type: 'tool_result', tool_use_id: edit.id, content: 'String not found', is_error: true}]};
+  const unchanged = prepare({tools, messages: [...base, {role: 'assistant', content: [edit]}, failed]});
+  assert.ok(unchanged.editableReads.some(r => r.read_id === handle));
+});
+
+test('offset-0 reads labeled from line 0 are editable snapshots', () => {
+  const request = lineEditRequest([], {type: 'tool_result', tool_use_id: 'read-x', content: '0\t/**\n1\t * Module.\n2\t */\n3\tvar a = 1;'});
+  const [read] = request.editableReads;
+  assert.deepEqual([read.start_line, read.end_line], [0, 3]);
+  const [edit] = parseReply('EDIT ' + read.read_id + ' 3 3\nvar a = 2;\nEND', request, {matchedTurn: true}).content;
+  assert.equal(edit.input.old_string, '/**\n * Module.\n */\nvar a = 1;');
+  assert.equal(edit.input.new_string, '/**\n * Module.\n */\nvar a = 2;');
+  const none = lineEditRequest([], {type: 'tool_result', tool_use_id: 'read-x', content: 'not numbered'});
+  assert.throws(() => parseReply('EDIT r123456789abc 3 3\nvar a = 2;\nEND', none, {matchedTurn: true}), /EDIT path\/to\/file\.js START END/);
+  const [auto] = parseReply('EDIT lib/a.js 95 102\nvar a = 2;\nEND', none, {matchedTurn: true}).content;
+  assert.equal(auto.name, 'Read');
+  assert.equal(auto.input.file_path, 'lib/a.js');
+});
