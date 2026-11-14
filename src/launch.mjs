@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { stateDir } from './server.mjs';
@@ -49,12 +50,23 @@ if (!editFiles.length) {
 env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = '1';
 // A compact prompt and core tools keep the request within one WhatsApp message.
 // Permissions stay with Claude Code. No bypass flags or global settings edits.
+// Claude Code requires background sessions to edit inside a git worktree.
+// Meta AI cannot be relied on to isolate itself first, so start the session
+// in a native worktree and link existing root dependency folders into it.
+const background = harness.args.some(arg => arg === '--bg' || arg === '--background');
+const ownWorktree = harness.args.some(arg => arg === '-w' || arg === '--worktree' || arg.startsWith('--worktree='));
+const inGit = background && !ownWorktree && process.env.WA_BG_WORKTREE !== '0' &&
+  spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {encoding: 'utf8'}).stdout?.trim() === 'true';
+const gitRoot = inGit ? spawnSync('git', ['rev-parse', '--show-toplevel'], {encoding: 'utf8'}).stdout.trim() : '';
+const linked = inGit ? ['node_modules'].filter(name => existsSync(path.join(gitRoot, name))) : [];
 const args=[editFiles.length ? '--bare' : '--safe-mode','--setting-sources','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
  '--settings', JSON.stringify({
    attribution: {commit: '', pr: '', sessionUrl: false},
    includeGitInstructions: false,
-   awaySummaryEnabled: false
+   awaySummaryEnabled: false,
+   ...(linked.length ? {worktree: {symlinkDirectories: linked}} : {})
  }),
+ ...(inGit ? ['--worktree'] : []),
  '--model','meta-ai-whatsapp'];
 if (!harness.args.some(arg => arg === '--tools' || arg.startsWith('--tools='))) {
  args.push('--tools', editFiles.length ? 'Read,Edit,Bash' : 'Read,Write,Edit,Glob,Grep,Bash');
