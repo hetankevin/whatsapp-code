@@ -25,7 +25,13 @@ try {const r=await fetch(base+'/health',{headers:{'x-api-key':token},signal:Abor
 catch(e){console.error(`Gateway unavailable: ${e.message}. Start npm start first.`);process.exit(1);}
 if(!health.ready){console.error(`WhatsApp not ready: ${health.status}`);process.exit(1);}
 const env={...process.env};
-for(const k of Object.keys(env)) if(k.startsWith('ANTHROPIC_')||k.startsWith('CLAUDE_CODE_USE_')||k==='CLAUDE_CODE_OAUTH_TOKEN'||k==='CLAUDECODE') delete env[k];
+// Start an independent session: drop provider settings and any parent Claude
+// Code session linkage. An inherited child-session marker turns off transcript
+// saving (so --resume cannot work) and messaging variables point at the parent.
+const parentSession = new Set(['CLAUDECODE','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_CHILD_SESSION','CLAUDE_CODE_SESSION_ID',
+ 'CLAUDE_CODE_BRIDGE_SESSION_ID','CLAUDE_CODE_MESSAGING_SOCKET','CLAUDE_CODE_MESSAGING_TOKEN','CLAUDE_CODE_SESSION_ATTENDED',
+ 'CLAUDE_CODE_ENTRYPOINT','CLAUDE_CODE_EXECPATH','CLAUDE_PID','CLAUDE_EFFORT']);
+for(const k of Object.keys(env)) if(k.startsWith('ANTHROPIC_')||k.startsWith('CLAUDE_CODE_USE_')||parentSession.has(k)) delete env[k];
 Object.assign(env,{
  ANTHROPIC_BASE_URL:base, ANTHROPIC_AUTH_TOKEN:token,
  ANTHROPIC_MODEL:'meta-ai-whatsapp',ANTHROPIC_DEFAULT_OPUS_MODEL:'meta-ai-whatsapp',ANTHROPIC_DEFAULT_SONNET_MODEL:'meta-ai-whatsapp',ANTHROPIC_DEFAULT_HAIKU_MODEL:'meta-ai-whatsapp',
