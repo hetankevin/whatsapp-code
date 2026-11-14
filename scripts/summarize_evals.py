@@ -12,6 +12,7 @@ diffs, or reply text are read or printed. Each attempt gets a failure layer:
   turn        the model ended its turn without a change, or without a passing
               native test after a correct change
   patch       the session ran, but the patch failed independent checks
+  context     the prompt exceeded the WhatsApp limit or compaction thrashed
   timeout     the run hit its wall-clock budget
 """
 import argparse
@@ -28,6 +29,8 @@ def layer(report):
     final = report.get('final') or ''
     if report.get('timed_out'):
         return 'timeout'
+    if 'Request too large' in error or 'thrashing' in error or 'Context is' in error:
+        return 'context'
     if 'snapshot' in error or 'stale' in error.lower() or 'does not match this request' in error:
         return 'identity'
     if error:
