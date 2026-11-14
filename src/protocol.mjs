@@ -1107,8 +1107,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
         JSON.stringify(payload)
       ].join('\n');
     const rangeGuide = rangeEnabled ? [
-      'To edit a file, reply with FILE: and its path on one line, then the original lines in one code block and the replacement lines in a second code block. Copy the original lines from a current Read result, without line numbers, including whole statements; the gateway finds them and Claude Code applies the change. Repeat the FILE section for several changes. If the file has no current Read, call Read first.',
-      'A line-range edit is also accepted: use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. After a successful EDIT, its result shows the current lines with a new read_id. Other edits or writes make prior reads of that file ineligible.',
+      'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. After a successful EDIT, its result shows the current lines with a new read_id. Other edits or writes make prior reads of that file ineligible.',
       'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, put END immediately after the header on its own line.',
       'If the replacement includes an entire multiline statement, select all its original lines. To move a statement within one excerpt, select a range that covers both locations and include the moved statement once.',
       'EDIT READ_ID START END_LINE',
