@@ -985,6 +985,10 @@ export function extractText(message, preserveCodeBlock = false) {
   const parts = message.richResponseMessage?.submessages;
   if (!Array.isArray(parts)) return '';
   const fence = '\x60'.repeat(3);
+  const framed = parts.some(part => /(?:^|\n)[ \t]*(?:EDIT[ \t]+\S+[ \t]+\d+[ \t]+\d+|REPLACE[ \t]+\d+[ \t]+\d+)(?:[ \t]+INDENT)?[ \t]*(?:\r?\n|$)/.test(part.messageText ?? ''));
+  // A frame already marks the source boundaries. Other reply formats need
+  // the fences to distinguish their code blocks from surrounding text.
+  preserveCodeBlock &&= !framed;
   return parts.map(p => p.messageText ?? p.codeMetadata?.codeBlocks?.map(block => {
     const source = block.codeContent ?? '';
     return preserveCodeBlock && source ? fence + '\n' + source + '\n' + fence : source;

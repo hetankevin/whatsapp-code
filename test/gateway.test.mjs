@@ -68,6 +68,12 @@ test('known rich response and nested fields extract only text',()=>{
  const fence = '\x60'.repeat(3);
  assert.equal(extractText(rich),code);
  assert.equal(extractText(rich,true),[fence,code,fence].join('\n'));
+ const framed = {richResponseMessage:{submessages:[
+  {messageText:'FILE 2\nREPLACE 7 7'},
+  {codeMetadata:{codeBlocks:[{codeContent:code}]}},
+  {messageText:'END'}
+ ]}};
+ assert.equal(extractText(framed,true),'FILE 2\nREPLACE 7 7\n'+code+'\nEND');
  assert.equal(extractText({secret:'not text',messageContextInfo:{persona:'ignore'}}),'');
 });
 test('WhatsApp matching rejects late replies and uses final JSON only',async()=>{
