@@ -36,6 +36,7 @@ TEMPLATE = ('{task}\n\nFix the implementation in this checkout. Preserve the sup
             'package files, public API, and existing behavior. Locate the relevant code with Grep, '
             'read bounded ranges, edit, and then run exactly: {command}\n'
             'If it fails, use the output to revise the patch and run it again.')
+CONTEXT_TOKENS = None
 EXCLUDED = re.compile(r'^(tests?/|package(-lock)?\.json$|npm-shrinkwrap\.json$|node_modules/)')
 
 
@@ -133,13 +134,15 @@ def gateway_log_delta(log, start):
     return [line[:160] for line in text.splitlines() if line and not line.startswith('{')][:40]
 
 
-def launch(case, project, config, mode, budget, max_turns, out_stem):
+def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None):
     command = shlex.join(case['cmd'])
     prompt = TEMPLATE.format(task=case['task'], command=command)
     env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(config)}
     for key in ('WA_EDIT_FILE', 'WA_EDIT_FILES', 'WA_EDIT_RANGES', 'WA_TEST_COMMAND'):
         env.pop(key, None)
     env.update(case.get('env', {}))
+    if CONTEXT_TOKENS:
+        env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'] = str(CONTEXT_TOKENS)
     tools = ['--permission-mode', 'dontAsk', '--allowedTools', 'Glob', 'Grep', 'Read', 'Edit', 'Write',
              f'Bash({command})', *[f'Bash({c})' for c in case.get('allow_bash', [])]]
     launcher = str(Path(os.environ.get('WA_EVAL_LAUNCHER', ROOT / 'src/launch.mjs')))
@@ -166,6 +169,62 @@ def launch(case, project, config, mode, budget, max_turns, out_stem):
         session = result.get('session_id')
         error = str(result.get('result') or '')[:300] if (result.get('is_error') or exit_code) else None
         final = str(result.get('result') or '')
+        if resume and session and not timed_out:
+            # Continue the same native session; Claude Code restores the transcript.
+            args = ['node', launcher, '--print', '--verbose', '--output-format', 'stream-json',
+                    '--max-turns', str(max_turns), '--resume', session, *tools, '--', resume]
+            remaining = max(30, budget - (time.time() - begin))
+            with open(out_stem + '-resume.jsonl', 'w') as stream, open(out_stem + '-resume.stderr', 'w') as stderr:
+                child = subprocess.Popen(args, cwd=project, env=env, stdout=stream, stderr=stderr, start_new_session=True)
+                try:
+                    child.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
+                exit_code = child.returncode
+            later = list(events_of(Path(out_stem + '-resume.jsonl').read_text(errors='replace').splitlines()))
+            result = next((e for e in reversed(later) if e.get('type') == 'result'), {})
+            error = str(result.get('result') or '')[:300] if (result.get('is_error') or exit_code) else None
+            final = str(result.get('result') or '')
+            events += later
+        compactions = sum(1 for e in events if e.get('type') == 'system' and e.get('subtype') == 'compact_boundary')
+    elif mode == 'tty':
+        # The ordinary interactive terminal UI, detached in screen.
+        import uuid
+        session = str(uuid.uuid4())
+        name = 'wa-eval-' + session[:8]
+        script = Path(out_stem + '.tty.sh')
+        script.write_text('cd ' + shlex.quote(str(project)) + ' && exec ' + shlex.join(
+            ['node', launcher, '--session-id', session, *tools, '--', prompt]) + '\n')
+        subprocess.run(['screen', '-dmS', name, '/bin/zsh', str(script)], env={**env, 'TERM': 'xterm-256color'}, check=True)
+
+        def transcript():
+            for path in (config / 'projects').glob('*/' + session + '.jsonl'):
+                yield from events_of(path.read_text(errors='replace').splitlines())
+        finished, stable = None, 0
+        while time.time() - begin < budget:
+            history = [e for e in transcript() if e.get('type') in ('assistant', 'user')]
+            last = history[-1] if history else None
+            blocks = (last or {}).get('message', {}).get('content') or []
+            done = last and last.get('type') == 'assistant' and isinstance(blocks, list) and not any(
+                isinstance(b, dict) and b.get('type') == 'tool_use' for b in blocks)
+            stable = stable + 1 if done else 0
+            if stable >= 5:
+                finished = last
+                break
+            time.sleep(2)
+        timed_out = finished is None
+        subprocess.run(['screen', '-S', name, '-X', 'quit'], capture_output=True)
+        time.sleep(2)
+        events = [e for e in transcript() if e.get('type') in ('assistant', 'user', 'system')]
+        with open(out_stem + '.jsonl', 'w') as handle:
+            for e in events:
+                handle.write(json.dumps(e) + '\n')
+        blocks = ((finished or {}).get('message') or {}).get('content') or []
+        final = ' '.join(b.get('text', '') for b in blocks if isinstance(b, dict) and b.get('type') == 'text') if isinstance(blocks, list) else str(blocks)
+        error = next((line[:300] for line in final.splitlines() if 'API Error' in line or 'Request too large' in line), None)
+        compactions = 0
     else:
         args = ['node', launcher, '--bg', '--name', f"eval {case['id']}", *tools, '--', prompt]
         started = subprocess.run(args, cwd=project, env=env, text=True, capture_output=True, timeout=30)
@@ -205,30 +264,100 @@ def launch(case, project, config, mode, budget, max_turns, out_stem):
         blocks = ((finished or {}).get('message') or {}).get('content') or []
         final = ' '.join(b.get('text', '') for b in blocks if isinstance(b, dict) and b.get('type') == 'text')
         error = next((line[:300] for line in final.splitlines() if 'API Error' in line or 'Request too large' in line), None)
-    return dict(seconds=round(time.time() - begin, 1), timed_out=timed_out, exit_code=exit_code,
+        compactions = sum(1 for e in events if e.get('type') == 'system' and e.get('subtype') == 'compact_boundary')
+    return dict(compactions=compactions, resumed=bool(resume), seconds=round(time.time() - begin, 1), timed_out=timed_out, exit_code=exit_code,
                 events=events, session=session, error=error, final=final[:300])
 
 
-def score(case, pre, patch, out_stem):
+SCORER_REVISION = 3
+
+
+def reference_failures(case, out, runs=3):
+    """Per-title failure counts over repeated runs of the FIXED revision only.
+    Buggy-revision failures are never forgiven, and the target command must
+    pass separately."""
+    if not case.get('preserve'):
+        return None
+    cache = out / f"reference3-{case['id']}.json"
+    if cache.exists():
+        return json.loads(cache.read_text())
+    counts, passing = {}, []
+    with tempfile.TemporaryDirectory(prefix='wa-eval-ref-') as tmp:
+        project = Path(tmp) / 'full'
+        copy_tree(Path(case['full_dir']), project)
+        if not (project / 'node_modules').exists():
+            (project / 'node_modules').symlink_to(Path(case['test_dir']) / 'node_modules')
+        for i in range(runs):
+            result = run_cmd(project, case['preserve'], out / f"reference-{case['id']}-{i}.log")
+            for title in result.get('failure_titles', []):
+                counts[title] = counts.get(title, 0) + 1
+            passing.append(result.get('passing', 0))
+    reference = {'counts': counts, 'min_passing': min(passing), 'max_passing': max(passing), 'runs': runs}
+    cache.write_text(json.dumps(reference, indent=2) + '\n')
+    return reference
+
+
+def score(case, pre, patch, out_stem, reference=None):
     with tempfile.TemporaryDirectory(prefix='wa-eval-score-') as tmp:
         project = Path(tmp) / 'p'
         copy_tree(Path(case['test_dir']), project)
         applied = subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=patch, cwd=project,
                                  text=True, capture_output=True)
         if applied.returncode:
-            return {'applied': False, 'error': applied.stderr[-300:]}
+            return {'applied': False, 'error': applied.stderr[-300:], 'scorer': SCORER_REVISION}
         target = run_cmd(project, case['cmd'], Path(out_stem + '-score-target.log'))
         broader = run_cmd(project, case['broader'], Path(out_stem + '-score-broader.log'))
-        reference = set(pre['full']['broader']['failure_titles'])
-        new_failures = sorted(set(broader.get('failure_titles', [])) - reference)
+        known = set(pre['full']['broader']['failure_titles'])
+        new_failures = sorted(set(broader.get('failure_titles', [])) - known)
         parity = (broader.get('code') is not None and not new_failures and
                   broader.get('passing', 0) >= pre['full']['broader']['passing'])
+        preserve = None
+        if reference is not None:
+            # A regression must fail in every candidate run and in at most one
+            # reference run. Titles flaky on the reference are reported, not scored.
+            runs = reference['runs']
+            counts = reference['counts']
+            first = run_cmd(project, case['preserve'], Path(out_stem + '-score-preserve.log'))
+            seen = {t: 1 for t in first.get('failure_titles', []) if counts.get(t, 0) < runs}
+            for i in range(1, runs if seen else 1):
+                again = set(run_cmd(project, case['preserve'], Path(out_stem + f'-score-preserve{i + 1}.log')).get('failure_titles', []))
+                for t in seen:
+                    seen[t] += t in again
+            regressions = sorted(t for t, n in seen.items() if n == runs and counts.get(t, 0) <= 1)
+            unscored = sorted(t for t, n in seen.items() if n == runs and counts.get(t, 0) > 1)
+            preserve = {'ok': first.get('code') is not None and not regressions and first.get('passing', 0) > 0,
+                        'passing': first.get('passing'), 'failing': first.get('failing'),
+                        'new_failures': regressions[:10], 'flaky_unscored': unscored[:10]}
         extra = []
         for i, cmd in enumerate(case.get('extra', [])):
+            cmd = [str(project) if part == '{project}' else part for part in cmd]
             extra.append(run_cmd(project, cmd, Path(out_stem + f'-score-extra{i}.log')).get('code') == 0)
-    return {'applied': True, 'target_pass': target.get('code') == 0, 'target': target,
+    correct = bool(target.get('code') == 0 and parity and all(extra) and (preserve is None or preserve['ok']))
+    return {'applied': True, 'scorer': SCORER_REVISION, 'target_pass': target.get('code') == 0, 'target': target,
             'broader_passing': broader.get('passing'), 'broader_failing': broader.get('failing'),
-            'new_failures': new_failures[:10], 'parity': parity, 'extra': extra}
+            'new_failures': new_failures[:10], 'parity': parity, 'preserve': preserve, 'extra': extra,
+            'correct': correct}
+
+
+def rescore(cases, out, labels):
+    """Re-judge saved candidate diffs with the current scorer. Originals stay untouched."""
+    for label in labels:
+        for case in cases:
+            for path in sorted((out / label).glob(case['id'] + '-r*.json')):
+                if '.rescore' in path.name:
+                    continue
+                report = json.loads(path.read_text())
+                stem = str(path)[:-5]
+                patch = Path(stem + '.diff').read_text() if Path(stem + '.diff').exists() else ''
+                judged = score(case, preflight(case, out), patch, stem + '.rescore', reference_failures(case, out)) \
+                    if patch.strip() else {'applied': False, 'scorer': SCORER_REVISION}
+                correct = bool(report.get('scope') and judged.get('correct'))
+                passed = bool(correct and report.get('native_test_pass_after_edit') and
+                              not report.get('timed_out') and not report.get('error'))
+                Path(stem + f'.rescore{SCORER_REVISION}.json').write_text(json.dumps(
+                    {'case': case['id'], 'label': label, 'original_passed': report.get('passed'),
+                     'patch_correct': correct, 'passed': passed, 'score': judged}, indent=2) + '\n')
+                print('rescore', label, path.name, 'PASS' if passed else 'fail', 'correct', correct, flush=True)
 
 
 def main():
@@ -238,20 +367,29 @@ def main():
     parser.add_argument('--label', required=True)
     parser.add_argument('--cases', nargs='*')
     parser.add_argument('--repeat', type=int, default=1)
-    parser.add_argument('--mode', choices=['print', 'bg'], default='print')
+    parser.add_argument('--mode', choices=['print', 'bg', 'tty'], default='print')
     parser.add_argument('--budget', type=int, default=300)
     parser.add_argument('--max-turns', type=int, default=40)
     parser.add_argument('--gateway-log', type=Path)
+    parser.add_argument('--resume-prompt', help='print mode: resume the session once with this follow-up')
+    parser.add_argument('--context-tokens', type=int, help='client context window, to force native compaction')
+    parser.add_argument('--rescore', nargs='*', help='re-judge saved runs under these labels, then exit')
     args = parser.parse_args()
+    global CONTEXT_TOKENS
+    CONTEXT_TOKENS = args.context_tokens
     cases = json.loads(args.manifest.read_text())
     if args.cases:
         cases = [c for c in cases if c['id'] in args.cases]
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
+    if args.rescore is not None:
+        rescore(cases, out, args.rescore or [args.label])
+        return
     runs = out / args.label
     runs.mkdir(exist_ok=True)
     for case in cases:
         pre = preflight(case, out)
+        reference = reference_failures(case, out)
         if not pre['valid']:
             print('skip invalid fixture', case['id'], flush=True)
             continue
@@ -272,25 +410,36 @@ def main():
                                                               str(project.resolve()): {'hasTrustDialogAccepted': True}}}))
             log_start = args.gateway_log.stat().st_size if args.gateway_log and args.gateway_log.exists() else 0
             print('running', args.label, case['id'], k, args.mode, flush=True)
-            run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem)
+            run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, args.resume_prompt)
             facts = analyse(run.pop('events'), case['cmd'])
-            status = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'],
-                                             cwd=project, text=True).splitlines()
+            # Background sessions edit inside a native worktree under .claude/worktrees.
+            worktrees = [Path(line[9:]) for line in subprocess.check_output(
+                ['git', 'worktree', 'list', '--porcelain'], cwd=project, text=True).splitlines()
+                if line.startswith('worktree ') and '/.claude/worktrees/' in line]
+            source = worktrees[0] if len(worktrees) == 1 else project
+            status = [line for line in subprocess.check_output(
+                ['git', 'status', '--porcelain', '--untracked-files=all'], cwd=source, text=True).splitlines()
+                if not line[3:].startswith('.claude/')]
+            if source != project:
+                status += [line for line in subprocess.check_output(
+                    ['git', 'status', '--porcelain', '--untracked-files=all'], cwd=project, text=True).splitlines()
+                    if not line[3:].startswith('.claude/')]
             paths = [line[3:] for line in status]
             scope = bool(paths) and all(line.startswith(' M ') for line in status) and not any(EXCLUDED.match(p) for p in paths)
-            patch = subprocess.check_output(['git', 'diff', '--binary'], cwd=project, text=True)
+            patch = subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=source, text=True)
             Path(stem + '.diff').write_text(patch)
-            judged = score(case, pre, patch, stem) if paths else {'applied': False}
-            passed = bool(scope and judged.get('target_pass') and judged.get('parity') and all(judged.get('extra', []))
-                          and facts['native_test_pass_after_edit'] and not run['timed_out'] and not run['error'])
+            judged = score(case, pre, patch, stem, reference) if paths else {'applied': False, 'scorer': SCORER_REVISION}
+            passed = bool(scope and judged.get('correct') and facts['native_test_pass_after_edit']
+                          and not run['timed_out'] and not run['error'])
             report = dict(case=case['id'], group=case.get('group'), label=args.label, repeat=k, mode=args.mode,
                           changed=paths, scope=scope, **run, **facts, score=judged,
-                          patch_correct=bool(scope and judged.get('target_pass') and judged.get('parity') and all(judged.get('extra', []))),
+                          worktree=source != project, patch_correct=bool(scope and judged.get('correct')),
                           passed=passed, gateway=gateway_log_delta(args.gateway_log, log_start))
             Path(stem + '.json').write_text(json.dumps(report, indent=2) + '\n')
             print('result', case['id'], k, 'PASS' if passed else 'fail', run['seconds'], 's',
                   'edits', facts['edits_ok'], 'tests', facts['native_tests'], 'target', judged.get('target_pass'),
-                  'parity', judged.get('parity'), 'err', run['error'], flush=True)
+                  'parity', judged.get('parity'), 'preserve', (judged.get('preserve') or {}).get('ok'),
+                  'err', run['error'], flush=True)
             shutil.rmtree(holder, ignore_errors=True)
 
 
