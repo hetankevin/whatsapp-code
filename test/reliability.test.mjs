@@ -1011,12 +1011,14 @@ test('a successful line edit leaves a current excerpt for the next edit', () => 
   const ok = {role: 'user', content: [{type: 'tool_result', tool_use_id: edit.id, content: 'The file a.js has been updated successfully.'}]};
   const next = prepare({tools, messages: [...base, {role: 'assistant', content: [edit]}, ok]});
   const current = next.editableReads.find(r => r.file_path === 'a.js');
-  assert.deepEqual([current.start_line, current.end_line], [7, 14]);
+  // The changed lines plus twelve lines of context on each side.
+  assert.deepEqual([current.start_line, current.end_line], [1, 21]);
   assert.ok(next.editableReads.some(r => r.file_path === 'b.js'), 'other files stay current');
-  assert.match(next.prompt, /Current lines 7-14 of a\.js after this edit \(read_id r[0-9a-f]{12}\):\\n7\\tline 7;/);
+  assert.match(next.prompt, /Current lines 1-21 of a\.js after this edit \(read_id r[0-9a-f]{12}\):\n1\tline 1;/);
   const [second] = parseReply('EDIT ' + current.read_id + ' 11 11\nline 10c;\nEND', next, {matchedTurn: true}).content;
-  assert.equal(second.input.old_string, ['line 7;','line 8;','line 9;','line 10a;','line 10b;','line 11;','line 12;','line 13;'].join('\n'));
-  assert.equal(second.input.new_string, ['line 7;','line 8;','line 9;','line 10a;','line 10c;','line 11;','line 12;','line 13;'].join('\n'));
+  const after = [...source.slice(0, 9), 'line 10a;', 'line 10b;', ...source.slice(10)];
+  assert.equal(second.input.old_string, after.join('\n'));
+  assert.equal(second.input.new_string, [...source.slice(0, 9), 'line 10a;', 'line 10c;', ...source.slice(10)].join('\n'));
   // The old handle is gone, and a failed edit changes nothing.
   assert.throws(() => parseReply('EDIT ' + handle + ' 3 3\nx;\nEND', next, {matchedTurn: true}), /current Read snapshot/);
   const failed = {role: 'user', content: [{type: 'tool_result', tool_use_id: edit.id, content: 'String not found', is_error: true}]};
@@ -1307,7 +1309,14 @@ test('FILE search-and-replace edits are anchored in the current Read ignoring wh
   assert.equal(both.length, 1);
   assert.match(both[0].input.new_string, /value\); \/\/ set[\s\S]*this; \/\/ done/);
   // Missing, ambiguous, and unread originals.
-  assert.throws(() => parseReply('FILE: lib/response.js\n' + fence + '\nnot here();\n' + fence + '\n' + fence + '\nx();\n' + fence, request, {matchedTurn: true}), /do not occur/);
+  // An unmatched original first gets a wider native Read of that file, then a repair.
+  const missing = 'FILE: lib/response.js\n' + fence + '\nnot here();\n' + fence + '\n' + fence + '\nx();\n' + fence;
+  const [wider] = parseReply(missing, request, {matchedTurn: true}).content;
+  assert.deepEqual([wider.name, wider.input], ['Read', {file_path: '/p/lib/response.js', offset: 1, limit: 46}]);
+  assert.match(wider.id, /^toolu_ctx_/);
+  const afterWider = prepare({tools, messages: [{role: 'user', content: 'Reject arrays.'}, read, result,
+    {role: 'assistant', content: [wider]}, {role: 'user', content: [{type: 'tool_result', tool_use_id: wider.id, content: source.map((l, i) => (i + 10) + '\t' + l).join('\n')}]}]});
+  assert.throws(() => parseReply(missing, afterWider, {matchedTurn: true}), /do not occur/);
   const dup = prepare({tools, messages: [{role: 'user', content: 'x'}, read, {role: 'user', content: [{type: 'tool_result', tool_use_id: 'r1', content: '1\t}\n2\tfoo();\n3\t}'}]}]});
   assert.throws(() => parseReply('FILE: lib/response.js\n' + fence + '\n}\n' + fence + '\n' + fence + '\n};\n' + fence, dup, {matchedTurn: true}), /occur 2 times/);
   const [readFirst] = parseReply('FILE: lib/other.js\n' + fence + '\na();\n' + fence + '\n' + fence + '\nb();\n' + fence, request, {matchedTurn: true}).content;
@@ -1328,5 +1337,12 @@ test('line numbers copied into a FILE block are removed', () => {
   const request = lineEditRequest();
   const fence = '\x60\x60\x60';
   const reply = 'FILE: module.js\n' + fence + '\n 8 return "old";\n 9 }\n' + fence + '\n' + fence + '\n  return "new";\n}\n' + fence;
+  assert.equal(parseReply(reply, request, {matchedTurn: true}).content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+});
+
+test('an unclosed replacement block before END and a later envelope is closed by the section end', () => {
+  const request = lineEditRequest();
+  const fence = '\x60\x60\x60';
+  const reply = 'FILE: module.js\n' + fence + '\nreturn "old";\n' + fence + '\n' + fence + '\nreturn "new";\nEND\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
   assert.equal(parseReply(reply, request, {matchedTurn: true}).content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
 });

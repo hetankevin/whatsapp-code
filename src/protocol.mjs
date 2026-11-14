@@ -110,8 +110,8 @@ function trackReads(messages, keepDisjoint = false, perFile = false) {
           let suffix = 0;
           while (suffix < Math.min(lines.length, edited.lines.length) - prefix &&
                  lines[lines.length - 1 - suffix] === edited.lines[edited.lines.length - 1 - suffix]) suffix++;
-          const from = Math.max(0, prefix - 3);
-          const to = Math.min(lines.length, lines.length - suffix + 3);
+          const from = Math.max(0, prefix - 12);
+          const to = Math.min(lines.length, lines.length - suffix + 12);
           const window = lines.slice(from, to);
           if (window.length && window.join('\n').length <= 6000) {
             snapshots.set(result.tool_use_id, {first: edited.first + from, lines: window, filePath: edited.filePath, edited: true});
@@ -1252,7 +1252,10 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     : Array.isArray(message.content) ? message.content.filter(block => block.type === 'text').map(block => block.text) : [])
     .flatMap(text => [...text.matchAll(sourcePath)].map(match => match[1])))
     .filter(file => !file.includes('node_modules/'));
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles,
+  const lastAssistant = [...transcript].reverse().find(message => message.role === 'assistant' && Array.isArray(message.content));
+  const contextReadOf = new Set((lastAssistant?.content ?? []).filter(block => block.type === 'tool_use' &&
+    block.id?.startsWith('toolu_ctx_') && typeof block.input?.file_path === 'string').map(block => block.input.file_path));
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles, contextReadOf,
     lastTest, changedSinceTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};
@@ -1380,6 +1383,10 @@ function parseSearchReplace(text, request, finalAttempt) {
     // Only the first action counts: stop at a later EDIT frame or JSON envelope.
     const later = section.search(/^[ \t]*(?:EDIT[ \t]|\{\s*"content"|\[\s*\{\s*"type")/m);
     if (later >= 0) section = section.slice(0, later);
+    // A stray END line ends nothing here, and the end of the section closes
+    // a final code block left open.
+    section = section.replace(/^[ \t]*END[ \t]*$/gm, '').trimEnd();
+    if ((section.match(/^[ \t]*\x60{3,}/gm) ?? []).length % 2) section += '\n\x60\x60\x60';
     const blocks = [...section.matchAll(/^[ \t]*\x60{3,}[^\n]*\n([\s\S]*?)\n[ \t]*\x60{3,}[ \t]*$/gm)]
       .map(match => match[1].replace(/^[ \t]*(?:original|replacement)(?: lines?)?:?[ \t]*(?:\n|$)/i, ''))
       // Line numbers copied from the Read display are not source.
@@ -1412,6 +1419,15 @@ function parseSearchReplace(text, request, finalAttempt) {
       for (let at = wanted ? flat.indexOf(wanted) : -1; at >= 0; at = flat.indexOf(wanted, at + 1)) {
         hits.push({id, snapshot, start: offsets[at], end: offsets[at + wanted.length - 1]});
       }
+    }
+    if (!hits.length && !request.contextReadOf?.has(excerpts[0][1].filePath)) {
+      // The original may extend beyond the excerpts read so far. Show a wider
+      // native Read once before asking the model to correct it.
+      const first = Math.min(...excerpts.map(([, snapshot]) => snapshot.first));
+      const last = Math.max(...excerpts.map(([, snapshot]) => snapshot.first + snapshot.lines.length - 1));
+      const offset = Math.max(1, first - 30);
+      const read = {file_path: excerpts[0][1].filePath, offset, limit: Math.min(400, last - offset + 31)};
+      if (request.validators.get('Read')?.(read)) return {content: [{type: 'tool_use', name: 'Read', input: read, context: true}]};
     }
     if (hits.length !== 1) {
       throw repairableError(hits.length
@@ -1493,7 +1509,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     if (searched) {
       const blocks = searched.content.map(block => block.resolved
         ? {type: 'tool_use', id: block.id, name: 'Edit', input: block.input}
-        : {type: 'tool_use', id: 'toolu_' + randomBytes(12).toString('hex'), name: block.name, input: block.input});
+        : {type: 'tool_use', id: (block.context ? 'toolu_ctx_' : 'toolu_') + randomBytes(12).toString('hex'), name: block.name, input: block.input});
       if (blocks.every(block => request.validators.get(block.name)?.(block.input))) return assistantMessage(request.model, blocks, usage);
       throw repairableError('Meta AI supplied invalid arguments for Edit. Match the tool input schema.');
     }
