@@ -518,6 +518,20 @@ test('a matched reply with later actions applies only the first encoded edit', (
   assert.throws(() => parseReply(first + '\n' + bash, request), /complete protocol/);
 });
 
+test('a matched discovery reply can announce an edit followed by a future action', () => {
+  const request = lineEditRequest();
+  const handle = request.editableReads[0].read_id;
+  const first = 'Fix the caller first:\nEDIT ' + handle + ' 8 8\n  return "new";\nEND';
+  const tail = '\n\nThen run the test:\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
+  const [edit, later] = parseReply(first + tail, request, {matchedTurn:true}).content;
+  assert.equal(edit.name, 'Edit');
+  assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
+  assert.equal(later, undefined);
+  assert.throws(() => parseReply(first + tail, request), /complete protocol/);
+  assert.throws(() => parseReply(first.replace(handle, 'stale') + tail, request, {matchedTurn:true}), /current Read snapshot/);
+  assert.throws(() => parseReply(first + '\n\nAmbiguous source.\nEND', request, {matchedTurn:true}), /complete protocol/);
+});
+
 test('an edit with a path and no current snapshot only requests a bounded native Read', () => {
   const request = lineEditRequest();
   const proposed = 'EDIT src/config.js 70 73 2\n2|replacement();\nEND\n' +

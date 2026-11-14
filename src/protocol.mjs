@@ -236,6 +236,19 @@ function firstEditFrame(text) {
   return boundary ? text.slice(0, boundary.index + boundary[1].length) : text;
 }
 
+function firstExplainedEdit(text) {
+  // Recover an ordinary frame announced in prose. Stop at the first END,
+  // and only accept a tail if it is clearly announcing another action.
+  const header = /:\r?\n(?=EDIT[ \t]+\S+[ \t]+\d+[ \t]+\d+)/.exec(text);
+  if (!header || hasEarlierAction(text.slice(0, header.index))) return;
+  const candidate = text.slice(header.index + header[0].length);
+  const footer = /\r?\n(END(?:[ \t]+[0-9a-f]{24})?)[ \t]*(\r?\n|$)/.exec(candidate);
+  if (!footer || /^EDIT[^\r\n]*\r?\n[ \t]*\x60{3}/.test(candidate)) return;
+  const tail = candidate.slice(footer.index + footer[0].length);
+  if (tail && !/^[ \t]*\r?\n[ \t]*[^\r\n]+:\r?\n(?=EDIT[ \t]|\{[ \t]*"content"\s*:)/.test(tail)) return;
+  return parseLineFrame(candidate.slice(0, footer.index + footer[0].length - footer[2].length).trimEnd());
+}
+
 // The WhatsApp transport matches replies to the exact outbound message. In the
 // edit loop, bind the proposal to a current snapshot from the configured files.
 function parseBoundEdit(text, request) {
@@ -813,11 +826,14 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     unfinishedVerification, useVerificationContext, textOnly};
 }
 
+function hasEarlierAction(prefix) {
+  return /(?:^|\n)[ \t]*(?:EDIT\b|REPLACE\b|FILE\b|[\[{]|\x60{3})|"(?:tool_use|request_id)"|"content"\s*:/.test(prefix);
+}
+
 function parseFirstReadOnlyCall(text) {
   const boundary = /(?:^|\r?\n)[ \t]*(?=\{[ \t]*"(?:content|request_id)"\s*:)/.exec(text);
   if (!boundary) return;
-  const prefix = text.slice(0, boundary.index);
-  if (/(?:^|\n)[ \t]*(?:EDIT\b|REPLACE\b|FILE\b|[\[{]|\x60{3})|"(?:tool_use|request_id)"|"content"\s*:/.test(prefix)) return;
+  if (hasEarlierAction(text.slice(0, boundary.index))) return;
   const candidate = text.slice(boundary.index + boundary[0].length);
   let reply;
   try { reply = JSON.parse(candidate); }
@@ -896,7 +912,7 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
           try { obj = parseWrappedLineFrame(trimmed); }
           catch {
             obj = matchedTurn && request.choice.type === 'auto' && !request.editFiles
-              ? parseFirstReadOnlyCall(trimmed)
+              ? parseFirstReadOnlyCall(trimmed) ?? firstExplainedEdit(trimmed)
               : undefined;
             if (!obj) obj = parseLiteralEditString(trimmed);
           }
