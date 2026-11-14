@@ -500,6 +500,15 @@ function parseLineFrame(text, inferIndent = false) {
 }
 
 // Discard a following tool envelope only after a complete frame.
+// A later standalone END with no new EDIT header before it means the first
+// END may be literal source, so the frame boundary is ambiguous.
+function ambiguousTail(tail) {
+  const end = /^END(?:[ \t]+\S+)?[ \t]*$/m.exec(tail);
+  if (!end) return false;
+  const edit = /^EDIT[ \t]/m.exec(tail);
+  return !edit || edit.index > end.index;
+}
+
 function firstEditFrame(text) {
   const boundary = /^(END(?:[ \t]+\S+)?)[ \t]*\r?\n(?:[ \t]*\r?\n)*(?=EDIT[ \t]|FILE[ \t]|(?:\{\s*"|\[\s*\{))/m.exec(text);
   if (boundary) return text.slice(0, boundary.index + boundary[1].length);
@@ -508,6 +517,7 @@ function firstEditFrame(text) {
   for (const match of text.matchAll(/^END(?:[ \t]+\S+)?[ \t]*$/gm)) {
     const before = text.slice(0, match.index);
     if ((before.match(/^[ \t]*\x60{3}/gm) ?? []).length % 2 === 0 && match.index + match[0].length < text.length) {
+      if (ambiguousTail(text.slice(match.index + match[0].length))) return text;
       return text.slice(0, match.index + match[0].trimEnd().length);
     }
   }
@@ -522,8 +532,9 @@ function firstExplainedEdit(text) {
   const candidate = text.slice(header.index + header[0].length);
   const footer = /\r?\n(END(?:[ \t]+[0-9a-f]{24})?)[ \t]*(\r?\n|$)/.exec(candidate);
   if (!footer || /^EDIT[^\r\n]*\r?\n[ \t]*\x60{3}/.test(candidate)) return;
-  const tail = candidate.slice(footer.index + footer[0].length);
-  if (tail && !/^(?:[ \t]*\r?\n)?(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{\s*"content"\s*:|\[\s*\{\s*"type"\s*:\s*"tool_use")/.test(tail)) return;
+  // Whatever follows the first END (commentary, a planned test, another
+  // frame) is not executed; only this edit runs before the next turn.
+  if (ambiguousTail(candidate.slice(footer.index + footer[0].length))) return;
   return parseLineFrame(candidate.slice(0, footer.index + footer[0].length - footer[2].length).trimEnd());
 }
 
