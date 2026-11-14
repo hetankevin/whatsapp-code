@@ -225,9 +225,9 @@ function decodeIndentation(source) {
 
 // A short header avoids putting code or delimiter punctuation inside JSON.
 function parseLineFrame(text, inferIndent = false) {
-  const match = /^EDIT[ \t]+(?:(\S+)[ \t]+)?(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n([\s\S]*?)\r?\nEND(?:[ \t]+(\S+))?$/.exec(text);
+  const match = /^EDIT[ \t]+(?:(\S+)[ \t]+)?(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?END(?:[ \t]+(\S+))?$/.exec(text);
   if (!match || match[1] !== match[7]) throw new SyntaxError('Incomplete EDIT frame.');
-  const [, requestId, read_id, start, end, mode, body] = match;
+  const [, requestId, read_id, start, end, mode, body = ''] = match;
   const fence = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/.exec(body) ??
     /^(\x60{3,})([^\x60\r\n]*[=();{}][\s\S]*?)\r?\n\1[ \t]*$/.exec(body);
   if (!fence && /^END(?:[ \t]+[0-9a-f]{24})?[ \t]*\r?$/m.test(body)) {
@@ -299,10 +299,10 @@ function parseBoundEdit(text, request) {
     }}]};
   }
   const frame = firstEditFrame(text);
-  const match = /^REPLACE[ \t]+(\d+[ \t]+\d+(?:[ \t]+INDENT)?)[ \t]*\r?\n([\s\S]*?)\r?\nEND$/.exec(frame);
+  const match = /^REPLACE[ \t]+(\d+[ \t]+\d+(?:[ \t]+INDENT)?)[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?END$/.exec(frame);
   if (match) {
     return parseLineFrame('EDIT ' + request.requestId + ' ' + readId + ' ' + match[1] +
-      '\n' + match[2] + '\nEND ' + request.requestId, frame !== text);
+      '\n' + (match[2] ?? '') + '\nEND ' + request.requestId, frame !== text);
   }
   if (request.useVerificationContext) throw repairableError('Use FILE and REPLACE to identify the exact lines to change.');
   const fenced = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1$/.exec(text);
@@ -765,7 +765,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     ].join('\n');
   const rangeGuide = rangeEnabled ? [
     'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
-    'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, leave the body empty.',
+    'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, put END immediately after the header on its own line.',
     'If the replacement includes an entire multiline statement, select all its original lines. To move a statement within one excerpt, select a range that covers both locations and include the moved statement once.',
     'EDIT READ_ID START END_LINE',
     '  replacement code',

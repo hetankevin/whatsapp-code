@@ -554,6 +554,19 @@ test('a matched discovery reply can announce an edit followed by a future action
   assert.throws(() => parseReply(first + '\n\nAmbiguous source.\nEND', request, {matchedTurn:true}), /complete protocol/);
 });
 
+test('a frame with END immediately after its header removes the selected lines', () => {
+  const request = lineEditRequest();
+  const handle = request.editableReads[0].read_id;
+  const header = 'EDIT ' + handle + ' 8 8';
+  const tail = '\n\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
+  for (const reply of [header + '\nEND', header + '\n\nEND', 'Remove the duplicate.\n\n' + header + '\nEND' + tail]) {
+    const blocks = parseReply(reply, request, {matchedTurn:true}).content;
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].input.new_string, 'const a = 1;\n}');
+  }
+  assert.throws(() => parseReply(header, request, {matchedTurn:true}), /complete protocol/);
+});
+
 test('an edit with a path and no current snapshot only requests a bounded native Read', () => {
   const request = lineEditRequest();
   const proposed = 'EDIT src/config.js 70 73 2\n2|replacement();\nEND\n' +
