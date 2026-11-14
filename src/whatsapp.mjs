@@ -7,6 +7,28 @@ import path from 'node:path';
 import QRCode from 'qrcode';
 import { extractText, GatewayError, parseReply } from './protocol.mjs';
 
+// Reply metadata that can show which model or mode answered. Diagnostics only.
+export function botMeta(message, depth = 0) {
+  if (!message || typeof message !== 'object' || depth > 4) return null;
+  const meta = message.messageContextInfo?.botMetadata;
+  if (meta) {
+    const steps = meta.progressIndicatorMetadata?.stepsMetadata ?? [];
+    return {
+      model: meta.modelMetadata ?? null,
+      mode: meta.botModeSelectionMetadata ?? null,
+      quota: meta.botQuotaMetadata ?? null,
+      infra: meta.botInfrastructureDiagnostics ?? null,
+      reasoning_steps: steps.filter(step => step?.isReasoning).length,
+      submessage_types: (message.richResponseMessage?.submessages ?? []).map(part => part.messageType ?? null)
+    };
+  }
+  for (const value of Object.values(message)) {
+    const found = value && typeof value === 'object' ? botMeta(value, depth + 1) : null;
+    if (found) return found;
+  }
+  return null;
+}
+
 export class WhatsApp {
   constructor({root, stateDir, timeout = 120000}) {
     this.ready = false;
@@ -81,7 +103,7 @@ export class WhatsApp {
       reply = parseReply(text, p.request, {matchedTurn: true, finalAttempt: p.repairCount >= 1});
     }
     catch (err) { p.lastError = err; }
-    this.logReply(p, text, e.edit, reply, p.lastError);
+    this.logReply(p, text, e.edit, reply, p.lastError, e.message);
     if (reply) {
       if (final) p.resolve(reply);
       else p.settle = setTimeout(() => p.resolve(reply), 2500);
@@ -93,12 +115,12 @@ export class WhatsApp {
   }
   // Opt-in private diagnostics for local debugging only. Replies can contain
   // source and prompts, so the file is created with owner-only permissions.
-  logReply(p, text, edit, reply, error) {
+  logReply(p, text, edit, reply, error, message) {
     const file = process.env.WA_REPLY_LOG;
     if (!file || !path.isAbsolute(file)) return;
     const record = {time: new Date().toISOString(), request: p.request.requestId, attempt: p.repairCount,
       edit: edit ?? null, prompt_chars: p.prompt?.length, tools: [...(p.request.validators?.keys() ?? [])],
-      reads: p.request.editableReads, error: error?.message ?? null,
+      reads: p.request.editableReads, error: error?.message ?? null, meta: botMeta(message),
       accepted: reply ? reply.content.map(b => b.type === 'tool_use' ? b.name : 'text') : null, text};
     try { appendFileSync(file, JSON.stringify(record) + '\n', {mode: 0o600}); } catch {}
   }
