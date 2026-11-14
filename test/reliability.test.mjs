@@ -1143,3 +1143,18 @@ test('a repeated success claim after untested edits reruns the failing test nati
   const other = turn('make deploy');
   assert.equal(parseReply(claim, other, {matchedTurn: true, finalAttempt: true}).content[0].type, 'text');
 });
+
+test('tool output in the WhatsApp view drops terminal styling and dependency frames', () => {
+  const tools = ['Read', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const output = 'Exit code 3\n\x1b[90m․\x1b[0m'.repeat(1) + '․'.repeat(30) + '\n\x1b[32m 31 passing\x1b[0m\n  1) res .send(code, body) should set .statusCode and body:\n' +
+    "     Error: expected 'Created :)' response body, got 'Created'\n" +
+    '      at error (/w/p/node_modules/supertest/lib/test.js:235:13)\n      at Object.onceWrapper (node:events:633:28)\n' +
+    '      at res.send (/w/p/lib/response.js:120:5)';
+  const request = prepare({tools, messages: [{role: 'user', content: 'Fix it.'},
+    {role: 'assistant', content: [{type: 'tool_use', id: 't', name: 'Bash', input: {command: 'npm test'}}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: 't', content: output, is_error: true}]}]});
+  assert.doesNotMatch(request.prompt, /\\u001b|node_modules\/supertest|node:events/);
+  assert.match(request.prompt, /progress dots/);
+  assert.match(request.prompt, /got 'Created'/);
+  assert.match(request.prompt, /lib\/response\.js:120:5/);
+});

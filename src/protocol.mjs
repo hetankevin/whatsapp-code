@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { testState, testCommand } from './failed-tests.mjs';
+import { testState, testCommand, readableOutput } from './failed-tests.mjs';
 
 export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -417,6 +417,8 @@ function content(blocks, readIds, snapshots, editedView) {
     }
     if (b.type === 'tool_result') {
       let result = content(b.content ?? '');
+      result = typeof result === 'string' ? readableOutput(result)
+        : result.map(block => block.type === 'text' ? {...block, text: readableOutput(block.text)} : block);
       if (!b.is_error && readIds?.has(b.tool_use_id) && !snapshots?.has(b.tool_use_id)) {
         result = typeof result === 'string'
           ? withoutReadLabels(result)

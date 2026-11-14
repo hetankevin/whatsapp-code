@@ -13,10 +13,22 @@ export function testCommand(tool, configuredCommand) {
     : null;
 }
 
+// Terminal styling and dependency stack frames add nothing for Meta AI.
+// Clean them from the WhatsApp view of tool output; Claude Code keeps the raw text.
+export function readableOutput(text) {
+  if (typeof text !== 'string') return text;
+  return text
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/(?:[\u2024.]){12,}/g, dots => '[' + dots.length + ' progress dots]')
+    .split('\n')
+    .filter(line => !/^\s+at (?:.*[(\s])?(?:node:[\w/]+|\S*\/node_modules\/)\S*:\d+(?::\d+)?\)?\s*$/.test(line))
+    .join('\n');
+}
+
 function failureExcerpt(content) {
-  const text = typeof content === 'string' ? content : Array.isArray(content)
+  const text = readableOutput(typeof content === 'string' ? content : Array.isArray(content)
     ? content.filter(block => block.type === 'text').map(block => block.text).join('\n')
-    : '';
+    : '');
   // Multi-step test commands can print a failure heading before another
   // test process dumps dependency warnings. Preserve the actual assertion.
   const lines = text.split('\n').filter(line => !/^\(node:\d+\) Warning:|^\(Use `node --trace-warnings /.test(line));
