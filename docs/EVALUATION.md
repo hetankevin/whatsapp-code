@@ -89,8 +89,8 @@ All attempts are listed in the per-batch tables produced by `scripts/summarize_e
 | H 08bda71 | interactive terminal | 2 | 0 | 0 | 1 |
 | H 08bda71 | think-hard, headless | 7 | 0 | 0 | 1 |
 | H 08bda71 | configured verification | 7 | 0 | 0 | 7 |
-| I 8736083 | headless | I_HEADLESS |
-| I 8736083 | background | I_BG |
+| I 8736083 | headless | 7 | 0 | 0 | 0 |
+| I 8736083 | background | 4 | 0 | 0 | 0 |
 
 Intermediate development revisions (afd4689, 3810f48, 97fab17, b3cd53b, 2a65a90) scored 0 on all 36 of their completed headless and background attempts; they are kept in the ledger, not in this table.
 
@@ -112,7 +112,7 @@ The passing attempt read the response module, made one edit inside its native ba
 | H default | 1/2 | 0/2 |
 | H think-hard | 2/2 | 0/2 (1 correct, lost to a no-op edit loop fixed in I) |
 | H configured | 2/2 | 0/2 |
-| I | I_TTL | I_CSV |
+| I | 1/2 (1 more correct, untested) | 0/2 |
 
 ### Long session, native compaction, and resume
 
@@ -159,3 +159,9 @@ Baseline failures were classified by layer and fixed at the layer they came from
 - Each case ran once or twice per configuration, so small differences between arms are within noise.
 - The BugsJS tasks are real upstream bugs and were hard for this backend; the synthetic tasks are small. There is no middle tier of ordinary feature work in this evaluation.
 - The remaining failures are mostly wrong patches and an ineffective edit-and-test workflow under this adapter. These results do not show whether further adapter work (for example different context or verification strategies) could raise success, and they do not measure the model's ability apart from this adapter. Reply metadata (`LLAMA_PROD`) does not identify the model or its size.
+
+## Next steps
+
+- **Muse bot (needs the account owner).** Discovery prefers the Muse bot (1807055946647697@bot), which Meta presents as a stronger model, but sends to it fail on this linked device with "no active WASA root secret". Every scored run here used the regular Meta AI bot. Establishing Muse's encryption state on the account (for example by opening a Muse chat on the phone) and rerunning the same cases with `WA_BOT_JID=1807055946647697@bot` is the most direct test of whether a different model changes the repair results.
+- **Workflow.** Sessions still make many edits per test and repeat ineffective changes. The configured verification path runs the test after every edit but decodes worse under its separate prompt; making the default mode run the model's own last test after each edit is the next candidate, measured as its own arm.
+- **Middle-tier tasks.** Add ordinary feature and refactoring tasks between the synthetic fixes and real upstream bugs, to see where usefulness ends.
