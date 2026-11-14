@@ -203,7 +203,13 @@ function parseLineFrame(text, inferIndent = false) {
   const match = /^EDIT[ \t]+(?:(\S+)[ \t]+)?(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n([\s\S]*?)\r?\nEND(?:[ \t]+(\S+))?$/.exec(text);
   if (!match || match[1] !== match[7]) throw new SyntaxError('Incomplete EDIT frame.');
   const [, requestId, read_id, start, end, mode, body] = match;
-  const fence = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/.exec(body);
+  const fence = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/.exec(body) ??
+    /^(\x60{3,})([^\x60\r\n]*[=();{}][\s\S]*?)\r?\n\1[ \t]*$/.exec(body);
+  // In the frame format a final fence is either the delimiter of a
+  // complete code block or ambiguous. Ask for JSON if it is literal source.
+  if (!fence && /(?:^|\r?\n)[ \t]*\x60{3,}[ \t]*$/.test(body)) {
+    throw repairableError('A closing code fence has no matching opening fence on its own line. Use literal source or one complete code block. For a literal closing fence, use JSON EditLines.');
+  }
   const source = fence ? fence[2] : body;
   const encoded = mode === 'INDENT' ||
     (inferIndent && source.split('\n').every(line => indentationPrefix.test(line)));

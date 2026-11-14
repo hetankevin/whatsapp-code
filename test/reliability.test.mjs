@@ -417,6 +417,10 @@ test('EDIT header preserves fenced source and accepts the observed older inline 
   const reply = 'EDIT '+nonce+' read-x 8 8\n'+fence+'js\n'+code+'\n'+fence+'\nEND '+nonce;
   const [edit] = parseReply(reply,request).content;
   assert.equal(edit.input.new_string, 'const a = 1;\n'+code+'\n}');
+  const glued = reply.replace(fence+'js\n',fence);
+  assert.deepEqual(parseReply(glued,request).content[0].input,edit.input);
+  const orphan = reply.replace(fence+'js\n','');
+  assert.throws(() => parseReply(orphan,request), /no matching opening fence/);
   assert.throws(() => parseReply(reply.replace('END '+nonce,'END stale'),request), /complete protocol/);
   assert.throws(() => parseReply(reply.replaceAll(nonce,'stale'),request), /does not match/);
   const legacy = JSON.stringify({request_id:nonce,content:[
