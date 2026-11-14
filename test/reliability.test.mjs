@@ -667,6 +667,12 @@ test('a configured test verifies discovered edits without fixed files', async ()
   record({type:'tool_use',id:'reread',name:'Read',input:{file_path:'caller.js'}},'1\tfunction handle() {}');
   const revised = turn();
   assert.match(revised.prompt, /Diagnostic lines that changed since the preceding run:\n    receiver is undefined/);
+  const retestResult = messages.find(message => message.content?.some?.(block => block.tool_use_id === retest.id));
+  const sameFailure = prepare({tools,messages:messages.map(message => message === retestResult
+    ? {...message,content:[{...message.content[0],content:'1 failing\n    at inner (callee.js:3:2)\n    at outer (caller.js:5:2)'}]}
+    : message)},60000,false,undefined,options);
+  assert.match(sameFailure.prompt, /The same failure remains after the latest edit/);
+  assert.doesNotMatch(sameFailure.prompt, /Diagnostic lines that changed/);
   const otherTest = {type:'tool_use',name:'Bash',id:'other-test',input:{command:'npm test'}};
   for (const is_error of [false, true]) {
     const afterOtherTest = prepare({tools,messages:[...messages,

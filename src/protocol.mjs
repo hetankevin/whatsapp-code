@@ -802,9 +802,15 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     ].join('\n\n');
   }
   if (useVerificationContext) {
-    const oldDiagnosticLines = new Set(previousFailure?.failure.split('\n').map(line => line.trim()));
-    const changedDiagnostic = previousFailure ? latestFailure.failure.split('\n')
-      .filter(line => line.trim() && !oldDiagnosticLines.has(line.trim())).slice(0, 5).join('\n') : '';
+    // Stack locations can shift after an edit while the same call still fails.
+    const diagnosticKey = line => line.trim().replace(/^(at .+?):\d+(?::\d+)?(\)?)$/, '$1:LINE$2');
+    const currentDiagnosticLines = latestFailure.failure.split('\n').filter(line => line.trim());
+    const previousDiagnosticKeys = previousFailure?.failure.split('\n').filter(line => line.trim()).map(diagnosticKey) ?? [];
+    const oldDiagnosticLines = new Set(previousDiagnosticKeys);
+    const changedDiagnostic = previousFailure ? currentDiagnosticLines
+      .filter(line => !oldDiagnosticLines.has(diagnosticKey(line))).slice(0, 5).join('\n') : '';
+    const sameDiagnostic = currentDiagnosticLines.length > 0 &&
+      currentDiagnosticLines.map(diagnosticKey).join('\n') === previousDiagnosticKeys.join('\n');
     const files = editableReads.map(read =>
       JSON.stringify(read) + '\n' + numberedSource(snapshots.get(readHandles.get(read.read_id))));
     const stackSource = [];
@@ -822,6 +828,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       'Task: ' + (typeof payload.task === 'string' ? payload.task : payload.task.filter(block => block.type === 'text').map(block => block.text).join('\n')),
       'Latest test failure:\n' + latestFailure.failure,
       ...(changedDiagnostic ? ['Diagnostic lines that changed since the preceding run:\n' + changedDiagnostic] : []),
+      ...(sameDiagnostic && editCount ? [
+        'The same failure remains after the latest edit. Compare the failing expression with the current code and change the operation or execution order responsible for the failure. Preserve existing operations that do not contribute to it.'
+      ] : []),
       ...(editCount ? [editCount + ' edit attempts have run and the test still fails. Use the current source to find the remaining cause. Fix the first incorrect call during the failure, and avoid adding guards that only change the error message.'] : []),
       ...(recentEdits.length ? ['Recent proposed edits. Check the current source and do not repeat an edit that left the test failing:\n' + recentEdits.join('\n')] : []),
       'editable_reads (current excerpts):\n' + files.join('\n\n'),
