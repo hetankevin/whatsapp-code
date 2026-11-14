@@ -1014,3 +1014,15 @@ test('offset-0 reads labeled from line 0 are editable snapshots', () => {
   assert.equal(auto.name, 'Read');
   assert.equal(auto.input.file_path, 'lib/a.js');
 });
+
+test('one Markdown code block inside an EDIT body is unwrapped', () => {
+  const request = lineEditRequest();
+  const [read] = request.editableReads;
+  const glued = 'EDIT ' + read.read_id + ' 8 8\nconst b = 2;\n\n```if (b) {\n  return "new";\n}\n```\nEND';
+  assert.equal(parseReply(glued, request, {matchedTurn: true}).content[0].input.new_string,
+    'const a = 1;\nconst b = 2;\n\nif (b) {\n  return "new";\n}\n}');
+  const tagged = 'EDIT ' + read.read_id + ' 8 8\n```js\n  return "new";\n```\nEND';
+  assert.equal(parseReply(tagged, request, {matchedTurn: true}).content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+  // An unmatched closing fence is still ambiguous.
+  assert.throws(() => parseReply('EDIT ' + read.read_id + ' 8 8\n  return "new";\n```\nEND', request, {matchedTurn: true}), /closing code fence/);
+});

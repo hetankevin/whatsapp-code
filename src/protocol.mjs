@@ -344,11 +344,27 @@ function decodeIndentation(source) {
 function parseLineFrame(text, inferIndent = false) {
   const match = /^EDIT[ \t]+(?:(\S+)[ \t]+)?(\S+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(INDENT))?[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?END(?:[ \t]+(\S+))?$/.exec(text);
   if (!match || match[1] !== match[7]) throw new SyntaxError('Incomplete EDIT frame.');
-  const [, requestId, read_id, start, end, mode, body = ''] = match;
+  let [, requestId, read_id, start, end, mode, body = ''] = match;
   const fence = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/.exec(body) ??
     /^(\x60{3,})([^\x60\r\n]*[=();{}][\s\S]*?)\r?\n\1[ \t]*$/.exec(body);
   if (!fence && /^END(?:[ \t]+[0-9a-f]{24})?[ \t]*\r?$/m.test(body)) {
     throw repairableError('Reply with one EDIT frame ending at its first standalone END. If the source contains a line with only END, wrap the replacement in one complete code block.');
+  }
+  // WhatsApp can render part of the replacement as one Markdown code block,
+  // with the opening marker glued to its first code line. Remove exactly one
+  // such marker pair; a bare word after the marker is a language tag.
+  if (!fence) {
+    const lines = body.split('\n');
+    const opens = lines.flatMap((line, i) => /^[ \t]*\x60{3}(?!\x60)/.test(line) && !/^[ \t]*\x60{3}[ \t]*\r?$/.test(line) ? [i] : []);
+    const closes = lines.flatMap((line, i) => /^[ \t]*\x60{3}[ \t]*\r?$/.test(line) ? [i] : []);
+    if (opens.length === 1 && closes.length === 1 && opens[0] < closes[0]) {
+      const rest = lines[opens[0]].replace(/^[ \t]*\x60{3}/, '');
+      const unwrapped = [...lines];
+      unwrapped.splice(closes[0], 1);
+      if (/^[\w+-]*[ \t]*\r?$/.test(rest)) unwrapped.splice(opens[0], 1);
+      else unwrapped[opens[0]] = rest;
+      body = unwrapped.join('\n');
+    }
   }
   // In the frame format a final fence is either the delimiter of a
   // complete code block or ambiguous. Ask for JSON if it is literal source.
