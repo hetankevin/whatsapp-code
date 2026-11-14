@@ -663,6 +663,14 @@ test('a configured test verifies discovered edits without fixed files', async ()
   record({type:'tool_use',id:'reread',name:'Read',input:{file_path:'caller.js'}},'1\tfunction handle() {}');
   const revised = turn();
   assert.match(revised.prompt, /Diagnostic lines that changed since the preceding run:\n    receiver is undefined/);
+  const otherTest = {type:'tool_use',name:'Bash',id:'other-test',input:{command:'npm test'}};
+  for (const is_error of [false, true]) {
+    const afterOtherTest = prepare({tools,messages:[...messages,
+      {role:'assistant',content:[otherTest]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:otherTest.id,content:'Other suite result.',is_error}]}
+    ]},60000,false,undefined,options);
+    assert.throws(() => parseReply('Tests passed.',afterOtherTest,{matchedTurn:true}), /still failing/);
+  }
   const f = transportFixture(tools, revised);
   const reply = (id, target, conversation) => f.w.event({event:'message',id,target,edit:'full',message:{conversation}});
   await reply('stale-read', 'original', currentEdit(request.editableReads[0], replacement));

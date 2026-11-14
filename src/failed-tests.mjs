@@ -27,10 +27,10 @@ function failureExcerpt(content) {
 }
 
 export function testState(messages, configuredCommand) {
-  let latestFailure;
-  let previousFailure;
   const failures = new Map();
+  const histories = new Map();
   const pending = new Map();
+  let latestCommand;
   for (const message of messages) {
     const blocks = Array.isArray(message.content) ? message.content : [];
     if (message.role === 'assistant') {
@@ -50,21 +50,18 @@ export function testState(messages, configuredCommand) {
         const command = pending.get(result.tool_use_id);
         if (!command) continue;
         pending.delete(result.tool_use_id);
+        latestCommand = command;
         if (result.is_error) {
           const failure = failureExcerpt(result.content);
           failures.set(command, failure);
-          if (latestFailure?.command === command) previousFailure = latestFailure;
-          else previousFailure = undefined;
-          latestFailure = {command, failure};
+          histories.set(command, {latestFailure:{command, failure},
+            previousFailure:histories.get(command)?.latestFailure});
         } else {
           failures.delete(command);
-          if (latestFailure?.command === command) {
-            latestFailure = undefined;
-            previousFailure = undefined;
-          }
+          histories.delete(command);
         }
       }
     }
   }
-  return {failures, latestFailure, previousFailure};
+  return {failures, ...histories.get(configuredCommand ?? latestCommand)};
 }

@@ -60,6 +60,24 @@ test('matched replies can carry a read-only call after an explanation', () => {
  assert.throws(()=>parseReply(JSON.stringify([call,{...call,name:'Bash'}]),r,{matchedTurn:true}), /no content/);
  assert.throws(()=>parseReply(direct.replace('"example.txt"','42'),r,{matchedTurn:true}), /invalid arguments/);
 });
+test('matched Grep replies preserve unescaped regex syntax', () => {
+ const b = body();
+ b.tools.push({name:'Grep', input_schema:{type:'object',required:['pattern'],properties:{pattern:{type:'string'}}}});
+ const r = prepare(b);
+ const pattern = String.raw`class\s*\{`;
+ const grep = String.raw`{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"class\s*\{"}}]}`;
+ const matched = {matchedTurn:true};
+ for (const lead of ['', 'Search the project:\n']) {
+   const [call] = parseReply(lead + grep, r, matched).content;
+   assert.equal(call.name, 'Grep');
+   assert.equal(call.input.pattern, pattern);
+ }
+ assert.equal(parseReply(grep.replace(pattern, String.raw`class\\s*\{`), r, matched).content[0].input.pattern, pattern);
+ assert.throws(() => parseReply(grep, r), /complete protocol/);
+ assert.throws(() => parseReply(grep.replace('Grep','Read'), r, matched), /complete protocol/);
+ assert.throws(() => parseReply(grep.replace('"pattern"','"file_path"'), r, matched), /complete protocol/);
+ assert.throws(() => parseReply(grep.replace('{"content"','{"request_id":"old","content"'), r, matched), /does not match/);
+});
 test('required tool selection and no-tools are enforced',()=>{
  const b=body(); b.tool_choice={type:'none'};let r=prepare(b);
  assert.throws(()=>parseReply(reply(r,[{type:'tool_use',name:'Read',input:{file_path:'x'}}]),r));

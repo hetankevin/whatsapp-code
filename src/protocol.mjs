@@ -840,19 +840,40 @@ function hasEarlierAction(prefix) {
   return /(?:^|\n)[ \t]*(?:EDIT\b|REPLACE\b|FILE\b|[\[{]|\x60{3})|"(?:tool_use|request_id)"|"content"\s*:/.test(prefix);
 }
 
+function parseReadOnlyEnvelope(text) {
+  try { return JSON.parse(text); }
+  catch (error) {
+    // WhatsApp can deliver a Grep regex with source backslashes instead of
+    // JSON-escaped backslashes. Repair only an invalid escape in that field.
+    const patterns = [...text.matchAll(/"pattern"\s*:\s*"((?:[^"\\\r\n]|\\[^\r\n])*)"/g)];
+    if (patterns.length !== 1) throw error;
+    const [match] = patterns;
+    const fixed = match[1].replace(/\\(?:["\\/bfnrt]|u[\da-fA-F]{4})|\\/g,
+      escape => escape === '\\' ? '\\\\' : escape);
+    if (fixed === match[1]) throw error;
+    const literal = '"' + fixed + '"';
+    const start = match.index + match[0].indexOf('"', match[0].indexOf(':'));
+    const reply = JSON.parse(text.slice(0, start) + literal + text.slice(match.index + match[0].length));
+    const [call] = Array.isArray(reply?.content) ? reply.content : [];
+    if (reply?.content?.length !== 1 || call?.type !== 'tool_use' || call.name !== 'Grep' ||
+        call.input?.pattern !== JSON.parse(literal)) throw error;
+    return reply;
+  }
+}
+
 function parseFirstReadOnlyCall(text) {
   const boundary = /(?:^|\r?\n)[ \t]*(?=\{[ \t]*"(?:content|request_id)"\s*:)/.exec(text);
   if (!boundary) return;
   if (hasEarlierAction(text.slice(0, boundary.index))) return;
   const candidate = text.slice(boundary.index + boundary[0].length);
   let reply;
-  try { reply = JSON.parse(candidate); }
+  try { reply = parseReadOnlyEnvelope(candidate); }
   catch {
     // A complete JSON line can precede prose that speculates about later
     // edits or tests. Only consider the first action in the reply.
     const paragraph = /\r?\n[ \t]*\r?\n/.exec(candidate);
     if (!paragraph) return;
-    reply = JSON.parse(candidate.slice(0, paragraph.index));
+    reply = parseReadOnlyEnvelope(candidate.slice(0, paragraph.index));
   }
   if (Array.isArray(reply?.content) && reply.content.length &&
       reply.content.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name))) {
