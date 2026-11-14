@@ -101,8 +101,13 @@ def events_of(lines):
 
 def analyse(events, cmd):
     calls, results = {}, []
+    denials = 0
     for idx, event in enumerate(events):
-        content = (event.get('message') or {}).get('content')
+        message = event.get('message')
+        if event.get('subtype') == 'permission_denied':
+            denials += 1
+        # Some system events (for example permission_denied) carry a string message.
+        content = message.get('content') if isinstance(message, dict) else None
         if not isinstance(content, list):
             continue
         for block in content:
@@ -128,6 +133,7 @@ def analyse(events, cmd):
         'native_tests': len(tests),
         'native_test_pass_after_edit': bool(edits) and any(i > max(edits) and not b.get('is_error') for i, b in tests),
         'read_limits': [c['input'].get('limit') for c in calls.values() if c['name'] == 'Read'],
+        'permission_denials': denials,
     }
 
 
