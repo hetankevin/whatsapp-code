@@ -29,7 +29,7 @@ def layer(report):
     final = report.get('final') or ''
     if report.get('timed_out'):
         return 'timeout'
-    if 'Request too large' in error or 'thrashing' in error or 'Context is' in error:
+    if any(text in error or text in final for text in ('Request too large', 'thrashing', 'Context is')):
         return 'context'
     if 'snapshot' in error or 'stale' in error.lower() or 'does not match this request' in error:
         return 'identity'
@@ -56,7 +56,10 @@ def load(paths):
                 report = json.loads(path.read_text())
             except ValueError:
                 continue
-            if 'case' in report:
+            if report.get('blocked'):
+                rows.append(dict(batch=report.get('label'), case=report['case'], group='blocked', mode=None, seconds=None,
+                                 correct=False, passed=False, native=False, edits=0, compactions=0, layer='blocked'))
+            elif 'case' in report:
                 rows.append(dict(batch=report.get('label'), case=report['case'], group=report.get('group') or 'dev',
                                  mode=report.get('mode'), seconds=report.get('seconds'),
                                  correct=bool(report.get('patch_correct')), passed=bool(report.get('passed')),
