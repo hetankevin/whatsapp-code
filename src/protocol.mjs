@@ -238,7 +238,9 @@ function resolveLineEdit(input, request) {
       : 'Use a read_id from editable_reads. Current: ' +
         (request.editableReads.map(read => read.read_id + ' ' + read.file_path + ' ' + read.start_line + '-' + read.end_line).join('; ') || 'none') +
         '. Without a current excerpt, put the file path in place of the read_id (EDIT path/to/file.js START END) and the gateway will Read those lines first.';
-    throw repairableError('EditLines needs a current Read snapshot. ' + guidance);
+    const error = repairableError('EditLines needs a current Read snapshot. ' + guidance);
+    error.missingSnapshot = {start_line, end_line};
+    throw error;
   }
   const contains = excerpt => start_line >= excerpt.first && end_line >= start_line &&
     end_line < excerpt.first + excerpt.lines.length;
@@ -1017,7 +1019,13 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
     ? unfinishedWork(taskMessages) : undefined;
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished,
+  // Files this task has read or changed, most recent last.
+  const recentFiles = [...new Set(taskMessages.flatMap(message =>
+    message.role === 'assistant' && Array.isArray(message.content) ? message.content
+      .filter(block => block.type === 'tool_use' && ['Read', 'Edit', 'Write'].includes(block.name) &&
+        typeof block.input?.file_path === 'string')
+      .map(block => block.input.file_path) : []).reverse())].reverse();
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles,
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -1199,7 +1207,21 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     const lineEdit = hasLineEdit && b.name === 'EditLines';
     const name = lineEdit ? 'Edit' : b.name;
     if (!request.validators.has(name)) throw repairableError('Meta AI returned an unknown content block or tool.');
-    let input = lineEdit ? resolveLineEdit(b.input, request) : b.input;
+    let input;
+    try { input = lineEdit ? resolveLineEdit(b.input, request) : b.input; }
+    catch (error) {
+      // If the repaired reply still has no current excerpt, read the requested
+      // lines of the most recently used file instead of failing the turn. The model then edits
+      // with the fresh handle. Reads cannot change the workspace.
+      const file = request.recentFiles?.at(-1);
+      const {start_line, end_line} = error.missingSnapshot ?? {};
+      if (!error.missingSnapshot || !matchedTurn || !finalAttempt || request.choice.type !== 'auto' || request.editFiles || !file ||
+          !Number.isSafeInteger(start_line) || !Number.isSafeInteger(end_line)) throw error;
+      const offset = Math.max(1, Math.min(start_line, end_line) - 10);
+      const read = {file_path: file, offset, limit: Math.min(120, Math.max(start_line, end_line) - offset + 11)};
+      if (!request.validators.get('Read')?.(read)) throw error;
+      return {type: 'tool_use', id: 'toolu_reread_' + randomBytes(12).toString('hex'), name: 'Read', input: read};
+    }
     const validate = request.validators.get(name);
     if (!validate(input)) {
       // Meta AI sometimes copies Bash's display label onto Read.
@@ -1213,7 +1235,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       if (!validate(input)) throw repairableError('Meta AI supplied invalid arguments for ' + name + '. Match the tool input schema.');
     }
     const repeatedTest = testCommand({name, input});
-    if (request.testFailures?.has(repeatedTest)) {
+    if (request.testFailures?.has(repeatedTest) && !finalAttempt) {
       const error = repairableError('This test command already failed and no workspace change is recorded. Inspect the failure, then edit or investigate before rerunning it.');
       error.testFailure = request.testFailures.get(repeatedTest);
       throw error;

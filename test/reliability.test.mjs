@@ -1026,3 +1026,19 @@ test('one Markdown code block inside an EDIT body is unwrapped', () => {
   // An unmatched closing fence is still ambiguous.
   assert.throws(() => parseReply('EDIT ' + read.read_id + ' 8 8\n  return "new";\n```\nEND', request, {matchedTurn: true}), /closing code fence/);
 });
+
+test('a repaired edit without a snapshot rereads the latest file instead of failing', () => {
+  const request = lineEditRequest([
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'cmd',input:{command:'npm test'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'cmd',content:'1 failing',is_error:true}]}
+  ]);
+  const stale = 'EDIT r000000000000 40 44\nreturn 1;\nEND';
+  assert.throws(() => parseReply(stale, request, {matchedTurn: true}), /current Read snapshot/);
+  const [read] = parseReply(stale, request, {matchedTurn: true, finalAttempt: true}).content;
+  assert.equal(read.name, 'Read');
+  assert.deepEqual(read.input, {file_path: 'module.js', offset: 30, limit: 25});
+  // A repeated failing test runs on the final attempt instead of ending the session.
+  const rerun = '{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
+  assert.throws(() => parseReply(rerun, request, {matchedTurn: true}), /already failed/);
+  assert.equal(parseReply(rerun, request, {matchedTurn: true, finalAttempt: true}).content[0].name, 'Bash');
+});
