@@ -166,6 +166,11 @@ def gateway_log_delta(log, start):
     return [line[:160] for line in text.splitlines() if line and not line.startswith('{')][:40]
 
 
+def runner_prefix(cmd):
+    # A generic interpreter needs its subcommand too (node --test, npm test).
+    return shlex.join(cmd[:2] if cmd[0] in ('node', 'npm', 'npx', 'yarn', 'pnpm', 'python', 'python3') else cmd[:1])
+
+
 def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None):
     command = shlex.join(case['cmd'])
     prompt = TEMPLATE.format(task=case['task'], command=command)
@@ -178,7 +183,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
     # Allow the exact command plus the project's test runner as a prefix rule,
     # so a re-quoted or narrowed test invocation is not denied. Nothing else.
     tools = ['--permission-mode', 'dontAsk', '--allowedTools', 'Glob', 'Grep', 'Read', 'Edit', 'Write',
-             f'Bash({command})', f'Bash({case["cmd"][0]}:*)', *[f'Bash({c})' for c in case.get('allow_bash', [])]]
+             f'Bash({command})', f'Bash({runner_prefix(case["cmd"])}:*)', *[f'Bash({c})' for c in case.get('allow_bash', [])]]
     launcher = str(Path(os.environ.get('WA_EVAL_LAUNCHER', ROOT / 'src/launch.mjs')))
     begin = time.time()
     timed_out, session, exit_code = False, None, None
