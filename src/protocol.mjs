@@ -259,13 +259,13 @@ function firstEditFrame(text) {
 function firstExplainedEdit(text) {
   // Recover an ordinary frame announced in prose. Stop at the first END,
   // and only accept a tail if it is clearly announcing another action.
-  const header = /:\r?\n(?=EDIT[ \t]+\S+[ \t]+\d+[ \t]+\d+)/.exec(text);
+  const header = /(?:\r?\n[ \t]*\r?\n|:\r?\n)(?=EDIT[ \t]+\S+[ \t]+\d+[ \t]+\d+)/.exec(text);
   if (!header || hasEarlierAction(text.slice(0, header.index))) return;
   const candidate = text.slice(header.index + header[0].length);
   const footer = /\r?\n(END(?:[ \t]+[0-9a-f]{24})?)[ \t]*(\r?\n|$)/.exec(candidate);
   if (!footer || /^EDIT[^\r\n]*\r?\n[ \t]*\x60{3}/.test(candidate)) return;
   const tail = candidate.slice(footer.index + footer[0].length);
-  if (tail && !/^[ \t]*\r?\n[ \t]*[^\r\n]+:\r?\n(?=EDIT[ \t]|\{[ \t]*"content"\s*:)/.test(tail)) return;
+  if (tail && !/^[ \t]*\r?\n(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{[ \t]*"content"\s*:)/.test(tail)) return;
   return parseLineFrame(candidate.slice(0, footer.index + footer[0].length - footer[2].length).trimEnd());
 }
 
@@ -496,6 +496,11 @@ function readFailedTestFrames(messages, validate, model, singleTool, {command, p
   const overlaps = ({file_path, offset, limit}) => reads.some(read => read.file_path === file_path &&
     offset < read.offset + read.limit && read.offset < offset + limit);
   const syntaxError = /^(?:# )?SyntaxError:/m.test(output);
+  const projectPath = file => path.isAbsolute(file) && projectRoot ? path.relative(projectRoot, file) : file;
+  const lastEdits = messages.findLast(message => message.role === 'assistant' &&
+    Array.isArray(message.content) && message.content.some(call => call.name === 'Edit'))?.content ?? [];
+  const editedFiles = new Set(lastEdits.filter(call => call.name === 'Edit' && typeof call.input?.file_path === 'string')
+    .map(call => projectPath(call.input.file_path)));
   // An assertion may have no implementation stack frame. In that case reuse
   // bounded reads from the investigation, including reads requested by the model.
   const successfulReads = new Set();
@@ -516,11 +521,10 @@ function readFailedTestFrames(messages, validate, model, singleTool, {command, p
           !Number.isSafeInteger(input?.offset) || input.offset < 1 ||
           !Number.isSafeInteger(input?.limit) || input.limit < 1 || input.limit > 100 ||
           typeof input.file_path !== 'string') continue;
-      const file_path = path.isAbsolute(input.file_path) && projectRoot
-        ? path.relative(projectRoot, input.file_path) : input.file_path;
+      const file_path = projectPath(input.file_path);
       const read = {...input, file_path};
       if (!file_path || path.isAbsolute(file_path) || file_path.split('/').includes('..') ||
-          overlaps(read) || (frames.has(file_path) && !syntaxError)) continue;
+          overlaps(read) || (frames.has(file_path) && !syntaxError && !editedFiles.has(file_path))) continue;
       reads.push(read);
     }
   }

@@ -545,6 +545,10 @@ test('a matched discovery reply can announce an edit followed by a future action
   assert.equal(edit.name, 'Edit');
   assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
   assert.equal(later, undefined);
+  const separated = first.replace('Fix the caller first:\n', 'The caller needs updating.\n\n');
+  const nextEdit = '\n\nEDIT ' + handle + ' 7 7\nunrelated();\nEND';
+  assert.deepEqual(parseReply(separated + nextEdit + tail, request, {matchedTurn:true})
+    .content.map(call => call.input), [edit.input]);
   assert.throws(() => parseReply(first + tail, request), /complete protocol/);
   assert.throws(() => parseReply(first.replace(handle, 'stale') + tail, request, {matchedTurn:true}), /current Read snapshot/);
   assert.throws(() => parseReply(first + '\n\nAmbiguous source.\nEND', request, {matchedTurn:true}), /complete protocol/);
@@ -725,6 +729,17 @@ test('a failed native test reads bounded implementation frames in auto mode', ()
   assert.deepEqual(rereads.map(call => call.input.file_path),
     ['lib/merge.js','lib/objects/load.js','lib/config.js']);
   assert.deepEqual(rereads.slice(1).map(call => call.input), calls.slice(0, 2).map(call => call.input));
+  const afterEdit = [
+    ...messages.slice(0, -2),
+    {role:'assistant',content:[{type:'tool_use',name:'Edit',id:'patch',input:{file_path:'/work/project/lib/objects/load.js'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'patch',content:'Applied'}]},
+    ...messages.slice(-2)
+  ];
+  afterEdit[afterEdit.length-1] = {role:'user',content:[{type:'tool_result',tool_use_id:'second',is_error:true,
+    content:'TypeError: invalid input\n    at load (/work/project/lib/objects/load.js:680:4)\n    at new Config (/work/project/lib/config.js:70:4)'}]};
+  assert.deepEqual(configured({messages:afterEdit}, '/work/project').localResult.content.map(call => call.input), [
+    {file_path:'lib/objects/load.js',offset:664,limit:33}, calls[1].input, calls[0].input
+  ]);
   messages.at(-1).content[0].content = '/work/project/lib/merge.js:105\nSyntaxError: unexpected token\n' +
     '    at Function.run (/work/project-other/lib/outside.js:112:4)';
   assert.deepEqual(configured({}, '/work/project').localResult.content.map(call => call.input.file_path),
