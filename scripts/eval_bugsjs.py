@@ -37,6 +37,7 @@ TEMPLATE = ('{task}\n\nFix the implementation in this checkout. Preserve the sup
             'read bounded ranges, edit, and then run exactly: {command}\n'
             'If it fails, use the output to revise the patch and run it again.')
 CONTEXT_TOKENS = None
+CONFIGURED_TEST = False
 EXCLUDED = re.compile(r'^(tests?/|package(-lock)?\.json$|npm-shrinkwrap\.json$|node_modules/)')
 
 
@@ -178,6 +179,10 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
     for key in ('WA_EDIT_FILE', 'WA_EDIT_FILES', 'WA_EDIT_RANGES', 'WA_TEST_COMMAND'):
         env.pop(key, None)
     env.update(case.get('env', {}))
+    if CONFIGURED_TEST:
+        # Configured verification: the gateway runs this exact command natively
+        # after each successful edit. Reported separately from default runs.
+        env['WA_TEST_COMMAND'] = command
     if CONTEXT_TOKENS:
         env['CLAUDE_CODE_MAX_CONTEXT_TOKENS'] = str(CONTEXT_TOKENS)
     # Allow the exact command plus the project's test runner as a prefix rule,
@@ -417,9 +422,11 @@ def main():
     parser.add_argument('--resume-prompt', help='print mode: resume the session once with this follow-up')
     parser.add_argument('--context-tokens', type=int, help='client context window, to force native compaction')
     parser.add_argument('--rescore', nargs='*', help='re-judge saved runs under these labels, then exit')
+    parser.add_argument('--configured-test', action='store_true', help='set WA_TEST_COMMAND to the case command (configured, not default)')
     args = parser.parse_args()
-    global CONTEXT_TOKENS
+    global CONTEXT_TOKENS, CONFIGURED_TEST
     CONTEXT_TOKENS = args.context_tokens
+    CONFIGURED_TEST = args.configured_test
     cases = json.loads(args.manifest.read_text())
     if args.cases:
         cases = [c for c in cases if c['id'] in args.cases]
