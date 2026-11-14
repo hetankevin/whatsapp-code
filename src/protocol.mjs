@@ -1392,6 +1392,9 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     if (name === 'Read' && request.validateLineEdit && request.choice.type === 'auto' && !request.editFiles &&
         !request.useVerificationContext && input && typeof input === 'object') {
       const shaped = {...input};
+      // Claude Code labels an offset-0 Read from 0, one below the real file
+      // line numbers that Meta AI uses in edits. Offset 1 labels real lines.
+      if (shaped.offset === 0) shaped.offset = 1;
       if (Number.isSafeInteger(shaped.limit) && shaped.limit < 40 && Number.isSafeInteger(shaped.offset)) {
         shaped.offset = Math.max(1, shaped.offset - 10);
         shaped.limit = 40;

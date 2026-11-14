@@ -896,7 +896,7 @@ test('matched envelopes missing final closers still validate', () => {
   // Short reads are widened in the default coding mode.
   assert.deepEqual(call.input, {file_path: 'lib/a.js', offset: 240, limit: 40});
   const whole = parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/a.js","offset":0,"limit":2000}}]}', request, {matchedTurn: true});
-  assert.deepEqual(whole.content[0].input, {file_path: 'lib/a.js', offset: 0, limit: 400});
+  assert.deepEqual(whole.content[0].input, {file_path: 'lib/a.js', offset: 1, limit: 400});
   const open = parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/a.js"}}]}', request, {matchedTurn: true});
   assert.deepEqual(open.content[0].input, {file_path: 'lib/a.js', limit: 400});
   const plain = parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/a.js","offset":100,"limit":80}}]}', request, {matchedTurn: true});
