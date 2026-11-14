@@ -1072,6 +1072,23 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
         current_request: focusRequest ? messages[taskIndex].content : undefined
       })
     };
+    // Code read through JSON escaping is harder for Meta AI to use, and a
+    // large escaped payload made it fail to answer at all. In the default mode,
+    // show long tool outputs as plain text sections and reference them from
+    // the transcript.
+    const outputs = [];
+    if (!textOnly && !useSnapshot && !useVerificationContext && !editFiles && Array.isArray(payload.messages)) {
+      payload.messages = payload.messages.map(message => !Array.isArray(message.content) ? message : {...message,
+        content: message.content.map(block => {
+          if (block.type !== 'tool_result') return block;
+          const blocks = Array.isArray(block.content) ? block.content : [{type: 'text', text: String(block.content ?? '')}];
+          if (blocks.some(part => part.type !== 'text')) return block;
+          const text = blocks.map(part => part.text).join('\n');
+          if (text.length < 300) return block;
+          outputs.push(text);
+          return {...block, content: '[shown above as OUTPUT ' + outputs.length + ']'};
+        })});
+    }
     let prompt = textOnly
       ? 'Use the supplied system instructions and transcript for this request. Ignore earlier WhatsApp messages. Return the requested response directly.\nCURRENT REQUEST:\n' + JSON.stringify({messages})
       : [
@@ -1169,6 +1186,12 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       ].join('\n\n');
     }
     prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
+    if (outputs.length) {
+      const sections = 'TOOL OUTPUTS (plain text, referenced from the transcript in CURRENT REQUEST):\n' +
+        outputs.map((text, index) => '=== OUTPUT ' + (index + 1) + ' ===\n' + text).join('\n') + '\n=== END OF TOOL OUTPUTS ===\n';
+      const at = prompt.lastIndexOf('\nCURRENT REQUEST:\n');
+      if (at >= 0) prompt = prompt.slice(0, at) + '\n' + sections + prompt.slice(at);
+    }
     return prompt;
   };
   let prompt = build();

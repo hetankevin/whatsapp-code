@@ -219,11 +219,13 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>
     {role:'user',content:[reminder]}
   ];
   const payload = snapshot => JSON.parse(prepare({messages}, 60000, snapshot).prompt.split('CURRENT REQUEST:\n')[1]);
+  // The long tool output is kept verbatim, as a plain section referenced from the transcript.
   assert.deepEqual(payload(false).messages, [
     {role:'user',content:'[See current_request below.]'},
     {role:'assistant',content:[bash]},
-    {role:'user',content:[output]}
+    {role:'user',content:[{...output, content:'[shown above as OUTPUT 1]'}]}
   ]);
+  assert.ok(prepare({messages}).prompt.includes('=== OUTPUT 1 ===\n' + stock));
   assert.deepEqual(payload(false).current_request, [task, {type:'text',text:custom}]);
   assert.deepEqual(payload(true).task, [task, {type:'text',text:custom}]);
 });
@@ -1266,4 +1268,16 @@ test('edits with no command afterward get one reminder to test', () => {
     {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'t1',input:{command:'node --test'}}]},
     {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'# pass 3'}]}]});
   assert.equal(parseReply('Fixed and tested.', tested, {matchedTurn: true}).content[0].type, 'text');
+});
+
+test('long tool outputs appear as plain text sections, not escaped JSON', () => {
+  const request = lineEditRequest([], {type: 'tool_result', tool_use_id: 'read-x',
+    content: Array.from({length: 40}, (_, i) => (i + 7) + '\tconst value' + i + ' = "quoted";').join('\n')});
+  const [before, json] = request.prompt.split('CURRENT REQUEST:\n');
+  assert.match(before, /=== OUTPUT 1 ===\n7\tconst value0 = "quoted";\n8\tconst value1/);
+  assert.match(json, /\[shown above as OUTPUT 1\]/);
+  assert.doesNotMatch(json, /value0 = \\"quoted\\"/);
+  // Snapshots and line edits still use the same Read.
+  const [edit] = parseReply('EDIT ' + request.editableReads[0].read_id + ' 8 8\nconst value1 = "new";\nEND', request, {matchedTurn: true}).content;
+  assert.match(edit.input.new_string, /const value1 = "new";/);
 });
