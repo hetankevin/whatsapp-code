@@ -1064,3 +1064,15 @@ test('flush-left replacements regain indentation in brace languages only', () =>
   const [template] = parseReply('EDIT ' + js.editableReads[0].read_id + ' 11 11\nvar s = `a`;\nEND', js, {matchedTurn: true}).content;
   assert.equal(template.input.new_string.split('\n')[1], 'var s = `a`;');
 });
+
+test('a line edit that changes bracket balance gets one repair', () => {
+  const request = lineEditRequest();
+  const handle = request.editableReads[0].read_id;
+  const extra = 'EDIT ' + handle + ' 8 8\n  if (x) {\n    return "new";\n  }\n}\nEND';
+  assert.throws(() => parseReply(extra, request, {matchedTurn: true}), /bracket balance \(\{ net 0 -> -1\)/);
+  assert.equal(parseReply(extra, request, {matchedTurn: true, finalAttempt: true}).content[0].name, 'Edit');
+  const balanced = 'EDIT ' + handle + ' 8 8\n  if (x) {\n    return "}";\n  }\nEND';
+  assert.equal(parseReply(balanced, request, {matchedTurn: true}).content[0].name, 'Edit');
+  const commented = 'EDIT ' + handle + ' 8 8\n  return "new"; // closes }\nEND';
+  assert.equal(parseReply(commented, request, {matchedTurn: true}).content[0].name, 'Edit');
+});

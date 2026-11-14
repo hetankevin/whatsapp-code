@@ -240,7 +240,29 @@ function reindent(replacement, selected, excerpt, filePath) {
   });
 }
 
-function resolveLineEdit(input, request) {
+// Net bracket counts outside strings and comments. A rough lexer is enough
+// to compare a replacement with the lines it replaces.
+function bracketBalance(text) {
+  const net = {'{': 0, '(': 0, '[': 0};
+  const close = {'}': '{', ')': '(', ']': '['};
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; continue; }
+    if (c === '/' && text[i + 1] === '*') { const end = text.indexOf('*/', i + 2); i = end < 0 ? text.length : end + 1; continue; }
+    if (c === '"' || c === "'" || c === '\x60') {
+      for (i++; i < text.length && text[i] !== c; i++) {
+        if (text[i] === '\\') i++;
+        else if (c !== '\x60' && text[i] === '\n') break;
+      }
+      continue;
+    }
+    if (c in net) net[c]++;
+    else if (c in close) net[close[c]]--;
+  }
+  return net;
+}
+
+function resolveLineEdit(input, request, finalAttempt = false) {
   if (!request.validateLineEdit?.(input)) throw repairableError('EditLines needs a read_id, two line numbers, and replacement source.');
   const {read_id, start_line, end_line} = input;
   let replacement = input.new_string;
@@ -314,6 +336,16 @@ function resolveLineEdit(input, request) {
     replacementLines = replacementLines.slice(1, -1);
   }
   replacementLines = reindent(replacementLines, lines.slice(start, end), lines, filePath);
+  if (!finalAttempt && braceLanguage.test(filePath)) {
+    const before = bracketBalance(lines.slice(start, end).join('\n'));
+    const after = bracketBalance(replacementLines.join('\n'));
+    const changed = Object.keys(before).filter(key => before[key] !== after[key]);
+    if (changed.length) {
+      throw repairableError('The replacement for lines ' + start_line + '-' + end_line + ' changes the bracket balance (' +
+        changed.map(key => key + ' net ' + before[key] + ' -> ' + after[key]).join(', ') +
+        '). Replace exactly the selected lines: include every closing bracket inside the range and none outside it.');
+    }
+  }
   // Use the whole observed excerpt as the exact match. The real Edit tool
   // checks for file changes and ambiguity before modifying anything.
   const updated = [...lines];
@@ -1257,7 +1289,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     const name = lineEdit ? 'Edit' : b.name;
     if (!request.validators.has(name)) throw repairableError('Meta AI returned an unknown content block or tool.');
     let input;
-    try { input = lineEdit ? resolveLineEdit(b.input, request) : b.input; }
+    try { input = lineEdit ? resolveLineEdit(b.input, request, finalAttempt) : b.input; }
     catch (error) {
       // The handle names the file, so show the model the lines it asked to
       // replace before it edits them. Reads cannot change the workspace.
