@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waAICommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -165,7 +166,17 @@ func main() {
 			continue
 		}
 		c, cancel := context.WithTimeout(ctx, 40*time.Second)
-		_, err := cli.SendMessage(c, bot, &waE2E.Message{Conversation: proto.String(cmd.Prompt)}, whatsmeow.SendRequestExtra{ID: cmd.ID})
+		msg := &waE2E.Message{Conversation: proto.String(cmd.Prompt)}
+		// Opt-in experiment: ask the bot for its "think hard" mode. Whether the
+		// account and bot honor it shows up only in reply metadata.
+		if os.Getenv("WA_BOT_MODE") == "think_hard" {
+			msg.MessageContextInfo = &waE2E.MessageContextInfo{BotMetadata: &waAICommon.BotMetadata{
+				BotModeSelectionMetadata: &waAICommon.BotModeSelectionMetadata{
+					Mode: []waAICommon.BotModeSelectionMetadata_BotUserSelectionMode{waAICommon.BotModeSelectionMetadata_THINK_HARD_MODE},
+				},
+			}}
+		}
+		_, err := cli.SendMessage(c, bot, msg, whatsmeow.SendRequestExtra{ID: cmd.ID})
 		cancel()
 		if err != nil {
 			emit(map[string]any{"event": "error", "id": cmd.ID, "error": err.Error()})
