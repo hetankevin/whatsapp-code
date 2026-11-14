@@ -135,6 +135,35 @@ The transport attached WhatsApp's `BotModeSelectionMetadata` with `THINK_HARD_MO
 
 A fresh clone from GitHub, `npm ci`, the Go build, `go vet`, and the unit tests took about 40 seconds; the launcher from that clone answered through the paired gateway in 5 to 11 seconds on each frozen revision. Rough edges: Go is not preinstalled on macOS; Claude Code prints a harmless `unrecognized_model` notice; `-p` waits three seconds for piped stdin unless it gets `< /dev/null`; Claude Code auto-updated during the evaluation.
 
+## Isolation experiment: direct request versus gateway presentation
+
+Approved after the poor repair scores, pre-registered in HANDOFF.md, and run with `scripts/eval_isolation.py`. Tasks: eslint-10, express-20, csv; 3 repeats per arm, arm order alternating per repeat; matched inputs (task text, the implementation files changed upstream in full, the same failing test output); no reference fix or diagnosis. Arm A is one plain WhatsApp message asking for each change as file, exact original lines, and replacement lines, applied only by exact unique match. Arm B is the gateway's real rendering of a Claude Code request (captured system prompt and tool schemas, transcript pre-seeded with native Read and failing Bash results); its first proposal is every edit until it asks for anything else (cap 6). Both are scored on clean copies with the live-run scorer. These are first-proposal results, not end-to-end tool-loop results.
+
+| Task | A applicable | A correct | B made edits | B correct | B endings |
+|---|---|---|---|---|---|
+| eslint-10 | 0/3 | 0/3 | 2/3 | 0/3 | 1 undecodable reply |
+| express-20 | 0/3 | 0/3 | 0/3 | 0/3 | 3 Meta AI generation failures |
+| csv | 3/3 | 0/3 | 0/3 | 0/3 | 2 undecodable, 1 text |
+
+What it shows, within its limits:
+
+- **Failure to infer a correct change is real.** The direct CSV patches applied cleanly but were wrong (4 of 7 visible tests, or a syntax error), and no ESLint proposal in either arm was correct.
+- **Presentation also causes failures.** All three direct express-20 replies proposed the right change (a `TypeError` for an array `Content-Type`; checked by reading, not scored) but quoted an "original" that merged two source lines, so none applied. The gateway arm never answered that task: Meta AI returned its generation-failure message 3 of 3 times. A follow-up diagnostic sent the same 54,000-character gateway prompt twice (failed twice) and a version with the numbered source moved out of the JSON payload into a plain section (answered twice). JSON-escaped source in the prompt, not its size, was the trigger.
+- **Copying exact text is unreliable** in the direct arm: Meta AI paraphrases or merges the lines it claims to replace. The gateway's line-range edits avoid that, which is why arm B applied edits where arm A could not.
+
+Limits: one shared WhatsApp chat (both diagnostic replies used arm A's reply format, so carryover between arms is real); arm B is a constructed transcript sent through the live gateway, not a live interactive session, and its captured system prompt names a different project root than its seeded Reads; 3 repeats per cell.
+
+Actions and reruns. Each change was rerun with the identical design and inputs (correct first proposals, with applied counts in parentheses):
+
+| Gateway revision | A eslint-10 | A express-20 | A csv | B eslint-10 | B express-20 | B csv |
+|---|---|---|---|---|---|---|
+| J (pre-registered run) | 0/3 (0) | 0/3 (0) | 0/3 (3) | 0/3 (2) | 0/3 (0) | 0/3 (0) |
+| K: long tool outputs as plain sections | 0/3 (0) | 0/3 (0) | 0/3 (3) | 0/3 (2) | 0/3 (2) | 0/3 (1) |
+| L: FILE search-and-replace edits | 0/3 (0) | 0/3 (0) | 0/3 (1) | 0/3 (0) | 0/3 (1) | 0/3 (1) |
+| M: L plus fixes for copied placeholders, line numbers, and mixed replies | 0/3 (0) | 0/3 (0) | 0/3 (3) | 0/3 (1) | **2/3** (3) | 0/3 (2) |
+
+Arm A does not depend on the gateway revision and stayed at 0 throughout. In arm B, K removed the generation failures, and M produced the first correct first proposals: Express 20 in 2 of 3 repeats, independently passing the target, the target file, and whole-suite preservation. ESLint and CSV stayed at 0 in both arms, which points to failure to infer those changes rather than presentation. With 3 repeats per cell and one shared chat, these counts are small; the Express 20 change from 0/9 to 2/3 is the clearest effect.
+
 ## What changed in the gateway
 
 Baseline failures were classified by layer and fixed at the layer they came from. Most fixes recover reply shapes Meta AI actually produced, always on the matched WhatsApp turn and always followed by the native schema, snapshot, and range checks:
