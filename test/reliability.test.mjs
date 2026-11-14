@@ -1281,3 +1281,35 @@ test('long tool outputs appear as plain text sections, not escaped JSON', () => 
   const [edit] = parseReply('EDIT ' + request.editableReads[0].read_id + ' 8 8\nconst value1 = "new";\nEND', request, {matchedTurn: true}).content;
   assert.match(edit.input.new_string, /const value1 = "new";/);
 });
+
+test('FILE search-and-replace edits are anchored in the current Read ignoring whitespace', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const source = ['res.set = function header(field, val) {', '  if (arguments.length === 2) {',
+    '    var value = String(val);', '    this.setHeader(field, value);', '  }', '  return this;', '};'];
+  const read = {role: 'assistant', content: [{type: 'tool_use', id: 'r1', name: 'Read', input: {file_path: '/p/lib/response.js'}}]};
+  const result = {role: 'user', content: [{type: 'tool_result', tool_use_id: 'r1', content: source.map((l, i) => (i + 10) + '\t' + l).join('\n')}]};
+  const request = prepare({tools, messages: [{role: 'user', content: 'Reject arrays.'}, read, result]});
+  assert.equal(request.preserveCodeBlocks, true);
+  const fence = '\x60\x60\x60';
+  // The original merges two lines and drops indentation; it still matches once.
+  const reply = 'Here is the fix.\n\nFILE: lib/response.js\n' + fence + 'js\nif (arguments.length === 2) { var value = String(val);\n' + fence + '\n' +
+    fence + 'js\nif (arguments.length === 2) {\nif (Array.isArray(val)) throw new TypeError("no arrays");\nvar value = String(val);\n' + fence;
+  const [edit] = parseReply(reply, request, {matchedTurn: true}).content;
+  assert.equal(edit.name, 'Edit');
+  assert.equal(edit.input.file_path, '/p/lib/response.js');
+  assert.equal(edit.input.old_string, source.join('\n'));
+  assert.deepEqual(edit.input.new_string.split('\n').slice(1, 4),
+    ['  if (arguments.length === 2) {', '    if (Array.isArray(val)) throw new TypeError("no arrays");', '    var value = String(val);']);
+  // Two changes to one excerpt become one native Edit.
+  const two = 'FILE: lib/response.js\n' + fence + '\nreturn this;\n' + fence + '\n' + fence + '\nreturn this; // done\n' + fence +
+    '\nFILE: lib/response.js\n' + fence + '\nthis.setHeader(field, value);\n' + fence + '\n' + fence + '\nthis.setHeader(field, value); // set\n' + fence;
+  const both = parseReply(two, request, {matchedTurn: true}).content;
+  assert.equal(both.length, 1);
+  assert.match(both[0].input.new_string, /value\); \/\/ set[\s\S]*this; \/\/ done/);
+  // Missing, ambiguous, and unread originals.
+  assert.throws(() => parseReply('FILE: lib/response.js\n' + fence + '\nnot here();\n' + fence + '\n' + fence + '\nx();\n' + fence, request, {matchedTurn: true}), /do not occur/);
+  const dup = prepare({tools, messages: [{role: 'user', content: 'x'}, read, {role: 'user', content: [{type: 'tool_result', tool_use_id: 'r1', content: '1\t}\n2\tfoo();\n3\t}'}]}]});
+  assert.throws(() => parseReply('FILE: lib/response.js\n' + fence + '\n}\n' + fence + '\n' + fence + '\n};\n' + fence, dup, {matchedTurn: true}), /occur 2 times/);
+  const [readFirst] = parseReply('FILE: lib/other.js\n' + fence + '\na();\n' + fence + '\n' + fence + '\nb();\n' + fence, request, {matchedTurn: true}).content;
+  assert.deepEqual([readFirst.name, readFirst.input], ['Read', {file_path: 'lib/other.js', offset: 1, limit: 400}]);
+});

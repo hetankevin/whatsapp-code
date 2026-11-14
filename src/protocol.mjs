@@ -1107,7 +1107,15 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
         JSON.stringify(payload)
       ].join('\n');
     const rangeGuide = rangeEnabled ? [
-      'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. After a successful EDIT, its result shows the current lines with a new read_id. Other edits or writes make prior reads of that file ineligible.',
+      'To edit a file, reply with FILE: and its path on one line, then the original lines in one code block and the replacement lines in a second code block. Copy the original lines from a current Read result, without line numbers, including whole statements; the gateway finds them and Claude Code applies the change. Repeat the FILE section for several changes. If the file has no current Read, call Read first.',
+      'FILE: path/to/file.js',
+      '\x60\x60\x60',
+      'original lines',
+      '\x60\x60\x60',
+      '\x60\x60\x60',
+      'replacement lines',
+      '\x60\x60\x60',
+      'A line-range edit is also accepted: use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. After a successful EDIT, its result shows the current lines with a new read_id. Other edits or writes make prior reads of that file ineligible.',
       'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, put END immediately after the header on its own line.',
       'If the replacement includes an entire multiline statement, select all its original lines. To move a statement within one excerpt, select a range that covers both locations and include the moved statement once.',
       'EDIT READ_ID START END_LINE',
@@ -1252,7 +1260,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     .flatMap(text => [...text.matchAll(sourcePath)].map(match => match[1])))
     .filter(file => !file.includes('node_modules/'));
   return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles,
-    lastTest, changedSinceTest,
+    lastTest, changedSinceTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -1366,6 +1374,85 @@ function noopFollowUp(request, finalAttempt) {
     (request.lastTest ? ' The latest result of ' + request.lastTest.command + ' still applies.' : '')};
 }
 
+// Search and replace, the shape Meta AI produces when simply asked for a patch:
+//   FILE: path, then the original lines and the replacement lines as two code
+//   blocks. The original is found in a current Read excerpt ignoring whitespace
+//   and line breaks, must match once, and is expanded to whole lines. Native
+//   Edit then receives the excerpt's exact text, as for line edits.
+function parseSearchReplace(text, request, finalAttempt) {
+  const heads = [...text.matchAll(/^[ \t]*FILE:[ \t]*\x60?([^\s\x60]+)\x60?[ \t]*$/gm)];
+  if (!heads.length) return;
+  const changes = heads.map((head, index) => {
+    const section = text.slice(head.index + head[0].length, heads[index + 1]?.index ?? text.length);
+    const blocks = [...section.matchAll(/^[ \t]*\x60{3,}[^\n]*\n([\s\S]*?)\n[ \t]*\x60{3,}[ \t]*$/gm)].map(match => match[1]);
+    return {path: head[1], original: blocks[0], replacement: blocks[1]};
+  });
+  if (changes.some(change => change.original === undefined || change.replacement === undefined)) {
+    throw repairableError('For each FILE, give the original lines in one code block and the replacement lines in a second code block.');
+  }
+  const squash = value => value.replace(/\s+/g, '');
+  const edits = new Map();
+  for (const change of changes) {
+    const excerpts = [...request.snapshots].filter(([, snapshot]) => sameFile(snapshot.filePath, change.path));
+    if (!excerpts.length) {
+      const read = {file_path: change.path, offset: 1, limit: 400};
+      if (request.validators.get('Read')?.(read)) return {content: [{type: 'tool_use', name: 'Read', input: read}]};
+      throw repairableError('Read ' + change.path + ' before editing it.');
+    }
+    const wanted = squash(change.original);
+    const hits = [];
+    for (const [id, snapshot] of excerpts) {
+      const offsets = [];
+      let flat = '';
+      snapshot.lines.forEach((line, index) => { for (const ch of line) if (!/\s/.test(ch)) { offsets.push(index); flat += ch; } });
+      for (let at = wanted ? flat.indexOf(wanted) : -1; at >= 0; at = flat.indexOf(wanted, at + 1)) {
+        hits.push({id, snapshot, start: offsets[at], end: offsets[at + wanted.length - 1]});
+      }
+    }
+    if (hits.length !== 1) {
+      throw repairableError(hits.length
+        ? 'The original lines for ' + change.path + ' occur ' + hits.length + ' times in the current Read output. Include more surrounding lines.'
+        : 'The original lines for ' + change.path + ' do not occur in the current Read output. Copy them exactly from the latest Read (without line numbers), or Read the file again.');
+    }
+    const [hit] = hits;
+    const list = edits.get(hit.id) ?? [];
+    list.push({...hit, replacement: change.replacement});
+    edits.set(hit.id, list);
+  }
+  const content = [];
+  for (const [id, list] of edits) {
+    const {snapshot} = list[0];
+    list.sort((a, b) => b.start - a.start);
+    if (list.some((edit, index) => index && edit.end >= list[index - 1].start)) {
+      throw repairableError('Two changes overlap. Send one change for those lines.');
+    }
+    const updated = [...snapshot.lines];
+    for (const edit of list) {
+      const selected = snapshot.lines.slice(edit.start, edit.end + 1);
+      const lines = reindent(edit.replacement === '' ? [] : edit.replacement.split('\n'), selected, snapshot.lines, snapshot.filePath);
+      if (!finalAttempt && braceLanguage.test(snapshot.filePath)) {
+        const before = bracketBalance(selected.join('\n'));
+        const after = bracketBalance(lines.join('\n'));
+        const changed = Object.keys(before).filter(key => before[key] !== after[key]);
+        if (changed.length) throw repairableError('A replacement changes the bracket balance (' +
+          changed.map(key => key + ' net ' + before[key] + ' -> ' + after[key]).join(', ') +
+          '). Include the complete statements, with their closing brackets, in both the original and the replacement.');
+      }
+      updated.splice(edit.start, edit.end - edit.start + 1, ...lines);
+    }
+    const old_string = snapshot.lines.join('\n');
+    const new_string = updated.join('\n');
+    if (old_string === new_string) {
+      const error = repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
+      error.noop = true;
+      throw error;
+    }
+    content.push({type: 'tool_use', name: 'Edit', id: 'toolu_lines_' + randomBytes(12).toString('hex'),
+      input: {file_path: snapshot.filePath, old_string, new_string}, resolved: true});
+  }
+  return {content};
+}
+
 export function parseReply(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
   const original = raw.trim();
   const fence = /^(\x60{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i.exec(original);
@@ -1386,6 +1473,25 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   }
   const read = matchedTurn && readBeforePathEdit(trimmed, request);
   if (read) return assistantMessage(request.model, [read], usage);
+  if (matchedTurn && request.validateLineEdit && request.choice.type === 'auto' && !request.editFiles &&
+      !request.useVerificationContext && /^[ \t]*FILE:[ \t]*\S/m.test(trimmed) && !/^[ \t]*EDIT[ \t]/m.test(trimmed)) {
+    let searched;
+    try { searched = parseSearchReplace(trimmed, request, finalAttempt); }
+    catch (error) {
+      if (error.noop) {
+        const follow = noopFollowUp(request, finalAttempt);
+        if (follow) return assistantMessage(request.model, [follow], usage);
+      }
+      throw error;
+    }
+    if (searched) {
+      const blocks = searched.content.map(block => block.resolved
+        ? {type: 'tool_use', id: block.id, name: 'Edit', input: block.input}
+        : {type: 'tool_use', id: 'toolu_' + randomBytes(12).toString('hex'), name: block.name, input: block.input});
+      if (blocks.every(block => request.validators.get(block.name)?.(block.input))) return assistantMessage(request.model, blocks, usage);
+      throw repairableError('Meta AI supplied invalid arguments for Edit. Match the tool input schema.');
+    }
+  }
   let obj;
   try {
     try { obj = parseJSON(trimmed); }
@@ -1419,7 +1525,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     // A plain answer can only finish a turn. It can never request a tool or
     // bypass validation for a reply that looks like the tool protocol.
     const startsWithJson = /^(?:\{|\[(?![^\]\n]+\](?:\(|\[)))/.test(trimmed);
-    const hasProtocolMarkers = /^[ \t]*(?:EDIT[ \t]+\S+[ \t]+\S+|(?:REPLACE|FILE)[ \t]+\d|<<<(?:FILE|OLD|NEW|END)>|\x60{3,}json\b)|"(?:request_id|tool_use)"|"content"\s*:/im.test(trimmed);
+    const hasProtocolMarkers = /^[ \t]*(?:EDIT[ \t]+\S+[ \t]+\S+|FILE:[ \t]*\S|(?:REPLACE|FILE)[ \t]+\d|<<<(?:FILE|OLD|NEW|END)>|\x60{3,}json\b)|"(?:request_id|tool_use)"|"content"\s*:/im.test(trimmed);
     if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && !startsWithJson && !hasProtocolMarkers) {
       checkVerificationReply(request, [], finalAttempt);
       return rerunInsteadOfClaim(request, [], finalAttempt, usage) ??
