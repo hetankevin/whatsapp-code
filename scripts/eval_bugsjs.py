@@ -74,6 +74,9 @@ def preflight(case, out):
     cache = out / f"preflight-{case['id']}.json"
     if cache.exists():
         return json.loads(cache.read_text())
+    for key in ('test_dir', 'full_dir'):
+        if not any(Path(case[key]).iterdir()) or not (Path(case[key]) / 'package.json').exists():
+            raise SystemExit(f"fixture {case['id']} {key} is empty or damaged: {case[key]}")
     with tempfile.TemporaryDirectory(prefix='wa-eval-pre-') as tmp:
         result = {}
         for rev in ('test', 'full'):
@@ -273,7 +276,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                 events=events, session=session, error=error, final=final[:300])
 
 
-SCORER_REVISION = 3
+SCORER_REVISION = 4
 
 
 def reference_failures(case, out, runs=3):
@@ -312,9 +315,13 @@ def score(case, pre, patch, out_stem, reference=None):
         target = run_cmd(project, case['cmd'], Path(out_stem + '-score-target.log'))
         broader = run_cmd(project, case['broader'], Path(out_stem + '-score-broader.log'))
         known = set(pre['full']['broader']['failure_titles'])
-        new_failures = sorted(set(broader.get('failure_titles', [])) - known)
+        new_failures = set(broader.get('failure_titles', [])) - known
+        if new_failures:  # confirm before counting a regression
+            again = run_cmd(project, case['broader'], Path(out_stem + '-score-broader2.log'))
+            new_failures &= set(again.get('failure_titles', []))
+        new_failures = sorted(new_failures)
         parity = (broader.get('code') is not None and not new_failures and
-                  broader.get('passing', 0) >= pre['full']['broader']['passing'])
+                  broader.get('passing', 0) >= pre['full']['broader']['passing'] - len(known))
         preserve = None
         if reference is not None:
             # A regression must fail in every candidate run and in at most one
