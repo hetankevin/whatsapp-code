@@ -512,7 +512,7 @@ function firstExplainedEdit(text) {
   const footer = /\r?\n(END(?:[ \t]+[0-9a-f]{24})?)[ \t]*(\r?\n|$)/.exec(candidate);
   if (!footer || /^EDIT[^\r\n]*\r?\n[ \t]*\x60{3}/.test(candidate)) return;
   const tail = candidate.slice(footer.index + footer[0].length);
-  if (tail && !/^(?:[ \t]*\r?\n)?(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{[ \t]*"content"\s*:)/.test(tail)) return;
+  if (tail && !/^(?:[ \t]*\r?\n)?(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{[ \t]*"content"\s*:|\[[ \t]*\{[ \t]*"type"[ \t]*:[ \t]*"tool_use")/.test(tail)) return;
   return parseLineFrame(candidate.slice(0, footer.index + footer[0].length - footer[2].length).trimEnd());
 }
 
@@ -1207,18 +1207,22 @@ function parseFirstReadOnlyCall(text) {
   // Prose followed by one fenced JSON envelope: use the envelope.
   const fenced = /^([\s\S]*?)\r?\n[ \t]*\x60{3}(?:json)?[ \t]*\r?\n(\{[ \t]*"content"[\s\S]*?)\r?\n[ \t]*\x60{3}[ \t]*(?:\r?\n[\s\S]*)?$/i.exec(text);
   if (fenced && !hasEarlierAction(fenced[1])) text = fenced[1] + '\n' + fenced[2];
-  const boundary = /(?:^|\r?\n)[ \t]*(?=\{[ \t]*"(?:content|request_id)"\s*:)/.exec(text);
+  const boundary = /(?:^|\r?\n)[ \t]*(?=\{[ \t]*"(?:content|request_id)"\s*:|\[[ \t]*\{[ \t]*"type"[ \t]*:[ \t]*"tool_use")/.exec(text);
   if (!boundary) return;
   if (hasEarlierAction(text.slice(0, boundary.index))) return;
   const candidate = text.slice(boundary.index + boundary[0].length);
   let reply;
-  try { reply = parseReadOnlyEnvelope(candidate); }
+  try {
+    reply = parseReadOnlyEnvelope(candidate);
+    if (Array.isArray(reply)) reply = {content: reply};
+  }
   catch {
     // A complete JSON line can precede prose that speculates about later
     // edits or tests. Only consider the first action in the reply.
     const paragraph = /\r?\n[ \t]*\r?\n/.exec(candidate);
     if (!paragraph) return;
     reply = parseReadOnlyEnvelope(candidate.slice(0, paragraph.index));
+    if (Array.isArray(reply)) reply = {content: reply};
   }
   if (Array.isArray(reply?.content) && reply.content.length &&
       reply.content.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name))) {

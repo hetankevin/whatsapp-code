@@ -1177,3 +1177,18 @@ test('changed_lines and unindented search-replace edits become exact native edit
   const unknown = JSON.stringify({content: [{type: 'tool_use', name: 'Edit', input: {file_path: 'module.js', old_string: 'missing();', new_string: 'x();'}}]});
   assert.equal(parseReply(unknown, request, {matchedTurn: true}).content[0].input.old_string, 'missing();');
 });
+
+test('prose followed by a bare tool array, and an explained edit with a trailing array', () => {
+  const tools = ['Read', 'Grep', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const plain = prepare({tools, messages: [{role: 'user', content: 'Find the router.'}]});
+  const grep = 'Let us search the router first.\n\n[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"req\\.url\\s*==","path":"lib"}}]';
+  assert.equal(parseReply(grep, plain, {matchedTurn: true}).content[0].input.pattern, 'req\\.url\\s*==');
+  const bash = 'Run it.\n\n[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]';
+  assert.throws(() => parseReply(bash, plain, {matchedTurn: true}), /protocol JSON/);
+  const request = lineEditRequest();
+  const handle = request.editableReads[0].read_id;
+  const edit = 'There is an extra bracket.\n\nEDIT ' + handle + ' 8 8\n  return "new";\nEND\nEND\n[{"type":"tool_use","name":"Bash","input":{"command":"node --test"}}]';
+  const {content} = parseReply(edit, request, {matchedTurn: true});
+  assert.equal(content.length, 1);
+  assert.equal(content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+});
