@@ -174,6 +174,7 @@ Baseline failures were classified by layer and fixed at the layer they came from
 - **Context:** tiny targeted reads widen to 40 lines, reads cap at 400 lines, terminal styling and dependency stack frames are removed from the WhatsApp view, and the oldest tool outputs are omitted from that view instead of returning a 413.
 - **Edit quality:** flush-left replacements regain indentation in brace languages; a line edit that changes bracket balance gets one repair.
 - **Launcher:** background sessions start in a native worktree with `node_modules` linked; parent Claude Code session variables are dropped (they disabled transcript saving in the interactive UI).
+- **Presentation (after the isolation experiment):** long tool outputs are shown as plain text sections referenced from the JSON transcript (escaped source triggered Meta AI generation failures); a `FILE:` search-and-replace edit (original and replacement code blocks) is accepted and anchored in the current Read ignoring whitespace, with copied placeholders and line numbers removed; edited excerpts keep 12 lines of context; an unmatched original first gets one wider native Read.
 
 ## Exclusions and incidents
 
