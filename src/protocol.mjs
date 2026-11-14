@@ -195,6 +195,51 @@ function staleRequestError(message) {
   return error;
 }
 
+const braceLanguage = /\.(?:[cm]?[jt]sx?|java|c|cc|cpp|h|hpp|cs|go|rs|php|swift|kt|kts|scala|css|scss|less|json)$/i;
+
+// Meta AI usually sends replacement lines flush-left. In brace languages,
+// restore indentation: unchanged lines keep their original indentation and
+// new lines follow brace depth. Python and other indentation-sensitive
+// files, and anything with template literals, are left exactly as sent.
+function reindent(replacement, selected, excerpt, filePath) {
+  const indentOf = line => /^[ \t]*/.exec(line)[0];
+  const code = replacement.filter(line => line.trim());
+  if (!braceLanguage.test(filePath) || !code.length || code.some(line => /^[ \t]/.test(line)) ||
+      !selected.some(line => line.trim() && indentOf(line)) ||
+      [...replacement, ...selected].some(line => line.includes('\x60'))) return replacement;
+  const widths = [...new Set(excerpt.filter(line => line.trim()).map(line => indentOf(line)))];
+  const tabs = widths.some(width => width.includes('\t'));
+  const sizes = widths.map(width => width.length).filter(size => size > 0).sort((a, b) => a - b);
+  const unit = tabs ? '\t' : ' '.repeat(sizes.length ? Math.min(...sizes.map((size, i) => i ? size - sizes[i - 1] : size).filter(size => size > 0)) : 2);
+  const opens = line => /[{([][ \t]*(?:\/\/.*)?$/.test(line.trim());
+  const closes = line => /^[})\]]/.test(line.trim());
+  const firstIndent = indentOf(selected.find(line => line.trim()) ?? '');
+  let cursor = 0;
+  let previous = null;
+  return replacement.map(line => {
+    if (!line.trim()) return line;
+    const text = line.trim();
+    // Bare closers carry no position, so they follow brace depth instead.
+    const match = /^[\])};,]*$/.test(text) ? -1
+      : selected.findIndex((original, i) => i >= cursor && original.trim() === text);
+    let indent;
+    if (match >= 0) {
+      cursor = match + 1;
+      indent = indentOf(selected[match]);
+    } else if (previous === null) {
+      indent = firstIndent;
+      if (closes(text) && !closes(selected.find(l => l.trim()) ?? '')) indent = indent.slice(0, Math.max(0, indent.length - unit.length));
+    } else {
+      indent = indentOf(previous);
+      if (opens(previous)) indent += unit;
+      if (closes(text)) indent = indent.slice(0, Math.max(0, indent.length - unit.length));
+      if (/^\*/.test(text) && /^(?:\/\*\*?|\*)/.test(previous.trim())) indent = indentOf(previous) + (/^\/\*/.test(previous.trim()) ? ' ' : '');
+    }
+    previous = indent + text;
+    return previous;
+  });
+}
+
 function resolveLineEdit(input, request) {
   if (!request.validateLineEdit?.(input)) throw repairableError('EditLines needs a read_id, two line numbers, and replacement source.');
   const {read_id, start_line, end_line} = input;
@@ -251,7 +296,9 @@ function resolveLineEdit(input, request) {
   }
   const {first, lines, filePath} = snapshot;
   if (!contains(snapshot)) {
-    throw repairableError('EditLines range lies outside the numbered Read result for ' + filePath + ' (' + first + '–' + (first + lines.length - 1) + '). Use the file and range from the same excerpt.');
+    const error = repairableError('EditLines range lies outside the numbered Read result for ' + filePath + ' (' + first + '–' + (first + lines.length - 1) + '). Use the file and range from the same excerpt.');
+    if (end_line >= start_line) error.unreadRange = {file_path: filePath, start_line, end_line};
+    throw error;
   }
   const start = start_line - first;
   const end = end_line - first + 1;
@@ -266,6 +313,7 @@ function resolveLineEdit(input, request) {
       before !== lines[start - 1] && after !== lines[end]) {
     replacementLines = replacementLines.slice(1, -1);
   }
+  replacementLines = reindent(replacementLines, lines.slice(start, end), lines, filePath);
   // Use the whole observed excerpt as the exact match. The real Edit tool
   // checks for file changes and ambiguity before modifying anything.
   const updated = [...lines];
@@ -1111,7 +1159,8 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   // A repeated END after a complete frame carries no source. Keep the first.
   const unwrapped = fence ? fence[2].trim() : original;
   const trimmed = /^[ \t]*(?:EDIT|REPLACE)[ \t]+\S+[ \t]+\d+/m.test(unwrapped)
-    ? unwrapped.replace(/^(END(?:[ \t]+\S+)?)[ \t]*(?:\r?\n[ \t]*END[ \t]*)+$/gm, '$1')
+    ? unwrapped.replace(/^END(?:[ \t]+END)+[ \t]*$/gm, 'END')
+      .replace(/^(END(?:[ \t]+\S+)?)[ \t]*(?:\r?\n[ \t]*END[ \t]*)+$/gm, '$1')
     : unwrapped;
   if (!trimmed) throw repairableError('Meta AI returned no content.');
   // Consumer WhatsApp supplies no tokenizer counts. These are estimates, not billing data.
@@ -1210,6 +1259,17 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     let input;
     try { input = lineEdit ? resolveLineEdit(b.input, request) : b.input; }
     catch (error) {
+      // The handle names the file, so show the model the lines it asked to
+      // replace before it edits them. Reads cannot change the workspace.
+      if (error.unreadRange && matchedTurn && request.choice.type === 'auto' && !request.editFiles &&
+          !request.useVerificationContext) {
+        const {file_path, start_line, end_line} = error.unreadRange;
+        const offset = Math.max(1, start_line - 3);
+        const read = {file_path, offset, limit: Math.min(150, end_line - offset + 4)};
+        if (request.validators.get('Read')?.(read)) {
+          return {type: 'tool_use', id: 'toolu_reread_' + randomBytes(12).toString('hex'), name: 'Read', input: read};
+        }
+      }
       // If the repaired reply still has no current excerpt, read the requested
       // lines of the most recently used file instead of failing the turn. The model then edits
       // with the fresh handle. Reads cannot change the workspace.

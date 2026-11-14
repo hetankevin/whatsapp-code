@@ -62,6 +62,10 @@ def run_cmd(project, cmd, log, timeout=120):
         return {'code': None, 'timeout': True}
     data = log.read_text(errors='replace')
     count = lambda word: int((re.findall(r'(\d+) ' + word, data) or ['0'])[-1])
+    if re.search(r'^# (pass|fail) \d+', data, re.M):  # node --test TAP output
+        tap = lambda word: int((re.findall(r'^# ' + word + r' (\d+)', data, re.M) or ['0'])[-1])
+        return {'code': child.returncode, 'passing': tap('pass'), 'failing': tap('fail'),
+                'failure_titles': sorted(set(re.findall(r'^\s*not ok \d+ - ([^\n]+)', data, re.M)))}
     return {'code': child.returncode, 'passing': count('passing'), 'failing': count('failing'),
             'failure_titles': sorted(set(re.findall(r'^\s*\d+\) ([^\n]+)', data, re.M)))}
 

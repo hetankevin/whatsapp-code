@@ -564,7 +564,7 @@ test('a matched reply with later actions applies only the first encoded edit', (
     request, {matchedTurn:true}), /one EDIT frame ending at its first standalone END/);
   const fence = '\x60'.repeat(3);
   const literal = 'EDIT ' + handle + ' 8 8\n' + fence + '\nEND\n' + fence + '\nEND';
-  assert.equal(parseReply(literal, request, {matchedTurn:true}).content[0].input.new_string, 'const a = 1;\nEND\n}');
+  assert.equal(parseReply(literal, request, {matchedTurn:true}).content[0].input.new_string, 'const a = 1;\n  END\n}');
   assert.throws(() => parseReply(first.replace(handle, 'r000000000000') + '\n' + bash,
     request, {matchedTurn:true}), /current Read snapshot/);
   assert.throws(() => parseReply(first + '\n' + bash, request), /complete protocol/);
@@ -627,7 +627,7 @@ test('nested EDIT headers never become source and are unwrapped only for matchin
   assert.throws(() => parseReply(reply(nested.replace('END '+nonce,'END wrong')),request), /one complete EDIT frame/);
   assert.throws(() => parseReply(reply(nested.replaceAll(nonce,'0'.repeat(24))),request), /stale request ID/);
   const literal = '2|3';
-  assert.equal(parseReply(reply(literal),request).content[0].input.new_string, 'const a = 1;\n2|3\n}');
+  assert.equal(parseReply(reply(literal),request).content[0].input.new_string, 'const a = 1;\n  2|3\n}');
 });
 
 test('recover a complete EDIT frame inside malformed JSON without changing literal code', () => {
@@ -970,7 +970,12 @@ test('bare tool arrays and JSON line edits use the ordinary validation path', ()
   const [edit] = parseReply(json('read-x'), request, {matchedTurn: true}).content;
   assert.equal(edit.name, 'Edit');
   assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
-  assert.throws(() => parseReply(json('read-x').replace('"end":8', '"end":12'), request, {matchedTurn: true}), /outside/);
+  // A range beyond the excerpt reads those lines of the same file first.
+  const [read] = parseReply(json('read-x').replace('"end":8', '"end":12'), request, {matchedTurn: true}).content;
+  assert.deepEqual([read.name, read.input], ['Read', {file_path: 'module.js', offset: 5, limit: 11}]);
+  assert.throws(() => parseReply(json('read-x').replace('"end":8', '"end":12'), request), /does not match/);
+  const doubled = parseReply('EDIT ' + request.editableReads[0].read_id + ' 8 8\n  return "new";\nEND END', request, {matchedTurn: true});
+  assert.equal(doubled.content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
 });
 
 test('a successful line edit leaves a current excerpt for the next edit', () => {
@@ -1041,4 +1046,21 @@ test('a repaired edit without a snapshot rereads the latest file instead of fail
   const rerun = '{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
   assert.throws(() => parseReply(rerun, request, {matchedTurn: true}), /already failed/);
   assert.equal(parseReply(rerun, request, {matchedTurn: true, finalAttempt: true}).content[0].name, 'Bash');
+});
+
+test('flush-left replacements regain indentation in brace languages only', () => {
+  const source = ['proto.handle = function handle(req, res) {', '  var idx = 0;', '  if (slashAdded) {',
+    '    req.url = req.url.substr(1);', '    slashAdded = false;', '  }', '  next();', '};'];
+  const numbered = source.map((line, i) => (i + 10) + '\t' + line).join('\n');
+  const request = file => lineEditRequest([], {type: 'tool_result', tool_use_id: 'read-x', content: numbered.replaceAll('module.js', file)});
+  const js = request('module.js');
+  const [edit] = parseReply('EDIT ' + js.editableReads[0].read_id + ' 12 15\nif (slashAdded) {\nreq.url = req.originalUrl;\nif (!req.url) {\nreq.url = "/";\n}\nslashAdded = false;\n}\nEND', js, {matchedTurn: true}).content;
+  assert.equal(edit.input.new_string.split('\n').slice(2, 9).join('\n'),
+    '  if (slashAdded) {\n    req.url = req.originalUrl;\n    if (!req.url) {\n      req.url = "/";\n    }\n    slashAdded = false;\n  }');
+  // Indented replacements are kept as sent.
+  const [kept] = parseReply('EDIT ' + js.editableReads[0].read_id + ' 11 11\n   var idx = 1;\nEND', js, {matchedTurn: true}).content;
+  assert.equal(kept.input.new_string.split('\n')[1], '   var idx = 1;');
+  // Template literals and indentation-sensitive files are not touched.
+  const [template] = parseReply('EDIT ' + js.editableReads[0].read_id + ' 11 11\nvar s = `a`;\nEND', js, {matchedTurn: true}).content;
+  assert.equal(template.input.new_string.split('\n')[1], 'var s = `a`;');
 });
