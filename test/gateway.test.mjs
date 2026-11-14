@@ -41,6 +41,17 @@ test('matched replies can carry a read-only call after an explanation', () => {
  assert.throws(()=>parseReply('EDIT invalid frame\n'+text,r,{matchedTurn:true}), /complete protocol/);
  assert.throws(()=>parseReply(prefix+JSON.stringify({content:[call,{...call,name:'Bash'}]}),r,
    {matchedTurn:true}), /complete protocol/);
+ const plan = '\n\nThen edit the caller.\nEDIT old 1 1\nreplacement\nEND\n' +
+   JSON.stringify({content:[{type:'tool_use',name:'Bash',input:{command:'npm test'}}]});
+ for (const lead of ['', prefix]) {
+   const [first, later] = parseReply(lead+JSON.stringify({content:[call]})+plan,r,{matchedTurn:true}).content;
+   assert.equal(first.name,'Read');
+   assert.equal(later,undefined);
+ }
+ assert.throws(()=>parseReply(prefix+reply(r,[call]).replace(r.requestId,'old')+plan,r,{matchedTurn:true}), /does not match/);
+ assert.throws(()=>parseReply(prefix+JSON.stringify({content:[{...call,name:'Bash'}]})+'\n\n'+text,
+   r,{matchedTurn:true}), /complete protocol/);
+ assert.throws(()=>parseReply('EDIT invalid frame\n'+text+plan,r,{matchedTurn:true}), /complete protocol/);
  const direct = JSON.stringify([{...call,id:'toolu_supplied_by_bot'}]);
  const [read] = parseReply(direct,r,{matchedTurn:true}).content;
  assert.equal(read.name,'Read');

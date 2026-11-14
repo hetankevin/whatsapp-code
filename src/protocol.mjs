@@ -813,10 +813,21 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     unfinishedVerification, useVerificationContext, textOnly};
 }
 
-function parseReadOnlyToolSuffix(text) {
-  const boundary = /\r?\n(?=\{[ \t]*"content"\s*:)/.exec(text);
-  if (!boundary || /(?:^|\n)[ \t]*(?:EDIT\b|REPLACE\b|FILE\b|[\[{]|\x60{3})/.test(text.slice(0, boundary.index))) return;
-  const reply = JSON.parse(text.slice(boundary.index + boundary[0].length));
+function parseFirstReadOnlyCall(text) {
+  const boundary = /(?:^|\r?\n)[ \t]*(?=\{[ \t]*"(?:content|request_id)"\s*:)/.exec(text);
+  if (!boundary) return;
+  const prefix = text.slice(0, boundary.index);
+  if (/(?:^|\n)[ \t]*(?:EDIT\b|REPLACE\b|FILE\b|[\[{]|\x60{3})|"(?:tool_use|request_id)"|"content"\s*:/.test(prefix)) return;
+  const candidate = text.slice(boundary.index + boundary[0].length);
+  let reply;
+  try { reply = JSON.parse(candidate); }
+  catch {
+    // A complete JSON line can precede prose that speculates about later
+    // edits or tests. Only consider the first action in the reply.
+    const paragraph = /\r?\n[ \t]*\r?\n/.exec(candidate);
+    if (!paragraph) return;
+    reply = JSON.parse(candidate.slice(0, paragraph.index));
+  }
   if (Array.isArray(reply?.content) && reply.content.length &&
       reply.content.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name))) {
     return reply;
@@ -885,7 +896,7 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
           try { obj = parseWrappedLineFrame(trimmed); }
           catch {
             obj = matchedTurn && request.choice.type === 'auto' && !request.editFiles
-              ? parseReadOnlyToolSuffix(trimmed)
+              ? parseFirstReadOnlyCall(trimmed)
               : undefined;
             if (!obj) obj = parseLiteralEditString(trimmed);
           }
