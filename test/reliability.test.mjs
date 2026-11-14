@@ -893,7 +893,14 @@ test('matched envelopes missing final closers still validate', () => {
   const read = '{"content":[{"type":"tool_use","id":"toolu_x","name":"Read","input":{"file_path":"lib/a.js","offset":250,"limit":10}}]';
   const [call] = parseReply(read, request, {matchedTurn: true}).content;
   assert.equal(call.name, 'Read');
-  assert.deepEqual(call.input, {file_path: 'lib/a.js', offset: 250, limit: 10});
+  // Short reads are widened in the default coding mode.
+  assert.deepEqual(call.input, {file_path: 'lib/a.js', offset: 240, limit: 40});
+  const whole = parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/a.js","offset":0,"limit":2000}}]}', request, {matchedTurn: true});
+  assert.deepEqual(whole.content[0].input, {file_path: 'lib/a.js', offset: 0, limit: 400});
+  const open = parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/a.js"}}]}', request, {matchedTurn: true});
+  assert.deepEqual(open.content[0].input, {file_path: 'lib/a.js', limit: 400});
+  const plain = parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/a.js","offset":100,"limit":80}}]}', request, {matchedTurn: true});
+  assert.deepEqual(plain.content[0].input, {file_path: 'lib/a.js', offset: 100, limit: 80});
   const explained = parseReply('Let us look at the response module.\n\n' + read, request, {matchedTurn: true});
   assert.equal(explained.content[0].name, 'Read');
   // Damage other than missing closers is still rejected.

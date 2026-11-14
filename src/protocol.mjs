@@ -1326,6 +1326,20 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       }
       if (!validate(input)) throw repairableError('Meta AI supplied invalid arguments for ' + name + '. Match the tool input schema.');
     }
+    // Very short targeted reads hide the surrounding function and lead to
+    // edits of unseen lines; very long ones force early compaction. Shape native Read
+    // windows in the default coding mode. Line numbers stay visible.
+    if (name === 'Read' && request.validateLineEdit && request.choice.type === 'auto' && !request.editFiles &&
+        !request.useVerificationContext && input && typeof input === 'object') {
+      const shaped = {...input};
+      if (Number.isSafeInteger(shaped.limit) && shaped.limit < 40 && Number.isSafeInteger(shaped.offset)) {
+        shaped.offset = Math.max(1, shaped.offset - 10);
+        shaped.limit = 40;
+      } else if (!Number.isSafeInteger(shaped.limit) || shaped.limit > 400) {
+        shaped.limit = 400;
+      }
+      if (validate(shaped)) input = shaped;
+    }
     const repeatedTest = testCommand({name, input});
     if (request.testFailures?.has(repeatedTest) && !finalAttempt) {
       const error = repairableError('This test command already failed and no workspace change is recorded. Inspect the failure, then edit or investigate before rerunning it.');
