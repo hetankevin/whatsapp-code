@@ -290,6 +290,8 @@ function bracketBalance(text) {
   return net;
 }
 
+const sourcePath = /(?:^|[\s\x60'"(])((?:\/?[\w.@-]+\/)*[\w.@-]+\.(?:[cm]?[jt]sx?|py|go|rs|java|rb|c|cc|cpp|h|hpp|cs|php|json))(?=$|[\s\x60'"),:;])/gm;
+
 function resolveLineEdit(input, request, finalAttempt = false) {
   if (!request.validateLineEdit?.(input)) throw repairableError('EditLines needs a read_id, two line numbers, and replacement source.');
   const {read_id, start_line, end_line} = input;
@@ -382,7 +384,11 @@ function resolveLineEdit(input, request, finalAttempt = false) {
   const new_string = updated.join('\n');
   // On the last attempt, let Claude Code's native Edit report the no-op as a
   // tool error the model can see, instead of ending the session here.
-  if (new_string === old_string && !finalAttempt) throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
+  if (new_string === old_string) {
+    const error = repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
+    error.noop = true;
+    throw error;
+  }
   return {file_path: filePath, old_string, new_string};
 }
 
@@ -498,9 +504,28 @@ function parseLineFrame(text, inferIndent = false) {
 }
 
 // Discard a following tool envelope only after a complete frame.
+// A later standalone END with no new EDIT header before it means the first
+// END may be literal source, so the frame boundary is ambiguous.
+function ambiguousTail(tail) {
+  const end = /^END(?:[ \t]+\S+)?[ \t]*$/m.exec(tail);
+  if (!end) return false;
+  const edit = /^EDIT[ \t]/m.exec(tail);
+  return !edit || edit.index > end.index;
+}
+
 function firstEditFrame(text) {
   const boundary = /^(END(?:[ \t]+\S+)?)[ \t]*\r?\n(?:[ \t]*\r?\n)*(?=EDIT[ \t]|FILE[ \t]|(?:\{\s*"|\[\s*\{))/m.exec(text);
-  return boundary ? text.slice(0, boundary.index + boundary[1].length) : text;
+  if (boundary) return text.slice(0, boundary.index + boundary[1].length);
+  // Commentary after a complete frame (for example "Let's run the tests" and
+  // a shell block) is not an action. Stop at the first END outside a fence.
+  for (const match of text.matchAll(/^END(?:[ \t]+\S+)?[ \t]*$/gm)) {
+    const before = text.slice(0, match.index);
+    if ((before.match(/^[ \t]*\x60{3}/gm) ?? []).length % 2 === 0 && match.index + match[0].length < text.length) {
+      if (ambiguousTail(text.slice(match.index + match[0].length))) return text;
+      return text.slice(0, match.index + match[0].trimEnd().length);
+    }
+  }
+  return text;
 }
 
 function firstExplainedEdit(text) {
@@ -511,8 +536,9 @@ function firstExplainedEdit(text) {
   const candidate = text.slice(header.index + header[0].length);
   const footer = /\r?\n(END(?:[ \t]+[0-9a-f]{24})?)[ \t]*(\r?\n|$)/.exec(candidate);
   if (!footer || /^EDIT[^\r\n]*\r?\n[ \t]*\x60{3}/.test(candidate)) return;
-  const tail = candidate.slice(footer.index + footer[0].length);
-  if (tail && !/^(?:[ \t]*\r?\n)?(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{\s*"content"\s*:|\[\s*\{\s*"type"\s*:\s*"tool_use")/.test(tail)) return;
+  // Whatever follows the first END (commentary, a planned test, another
+  // frame) is not executed; only this edit runs before the next turn.
+  if (ambiguousTail(candidate.slice(footer.index + footer[0].length))) return;
   return parseLineFrame(candidate.slice(0, footer.index + footer[0].length - footer[2].length).trimEnd());
 }
 
@@ -1009,7 +1035,10 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const editCount = useVerificationContext ? taskMessages.reduce((count, message) =>
     count + (message.role === 'assistant' && Array.isArray(message.content)
       ? message.content.filter(block => block.type === 'tool_use' && block.name === 'Edit').length : 0), 0) : 0;
-  if (editCount >= 8) throw new GatewayError('The configured test is still failing after eight edit attempts.', 502);
+  // The configured edit budget is spent: finish with an explicit unsuccessful
+  // answer rather than an API error that suggests retrying.
+  if (editCount >= 8) return {localResult: assistantMessage(model, [{type: 'text',
+    text: 'Stopped: ' + editOptions.command + ' still fails after eight edit attempts. The latest test output shows the remaining failure.'}])};
   const numberedSource = snapshot => snapshot?.lines
     .map((line, index) => (snapshot.first + index) + '\t' + line).join('\n');
   const [currentRead] = snapshots.values();
@@ -1167,13 +1196,36 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
     ? unfinishedWork(taskMessages) : undefined;
+  // The last test command run in this task, and whether the workspace
+  // changed after it (a successful Edit or Write).
+  let lastTest, changedSinceTest = false;
+  {
+    const calls = new Map();
+    for (const message of taskMessages) {
+      if (!Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (block.type === 'tool_use') calls.set(block.id, block);
+        if (block.type !== 'tool_result') continue;
+        const call = calls.get(block.tool_use_id);
+        if (call?.name === 'Bash' && testCommand(call, editOptions.command)) {
+          lastTest = {command: call.input.command, ...(typeof call.input.description === 'string' ? {description: call.input.description} : {})};
+          changedSinceTest = false;
+        } else if (['Edit', 'Write'].includes(call?.name) && !block.is_error) changedSinceTest = true;
+      }
+    }
+  }
   // Files this task has read or changed, most recent last.
   const recentFiles = [...new Set(taskMessages.flatMap(message =>
     message.role === 'assistant' && Array.isArray(message.content) ? message.content
       .filter(block => block.type === 'tool_use' && ['Read', 'Edit', 'Write'].includes(block.name) &&
         typeof block.input?.file_path === 'string')
       .map(block => block.input.file_path) : []).reverse())].reverse();
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles,
+  const mentionedFiles = taskMessages.flatMap(message => (typeof message.content === 'string' ? [message.content]
+    : Array.isArray(message.content) ? message.content.filter(block => block.type === 'text').map(block => block.text) : [])
+    .flatMap(text => [...text.matchAll(sourcePath)].map(match => match[1])))
+    .filter(file => !file.includes('node_modules/'));
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles,
+    lastTest, changedSinceTest,
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -1224,6 +1276,9 @@ function parseFirstReadOnlyCall(text) {
     reply = parseReadOnlyEnvelope(candidate.slice(0, paragraph.index));
     if (Array.isArray(reply)) reply = {content: reply};
   }
+  // Prose followed by a text-only envelope is a final answer.
+  if (Array.isArray(reply?.content) && reply.content.length &&
+      reply.content.every(block => block?.type === 'text' && typeof block.text === 'string')) return reply;
   // Several actions after prose may be a speculative plan, so only read-only
   // calls pass. A single call is the reply's one action; Claude Code still
   // applies its permission rules to it.
@@ -1276,11 +1331,21 @@ function rerunInsteadOfClaim(request, calls, finalAttempt, usage) {
   return assistantMessage(request.model, [{type: 'tool_use', id: 'toolu_rerun_' + randomBytes(12).toString('hex'), name: 'Bash', input}], usage);
 }
 
+function noopFollowUp(request, finalAttempt) {
+  if (request.lastTest && request.changedSinceTest && request.validators.get('Bash')?.(request.lastTest)) {
+    return {type: 'tool_use', id: 'toolu_verify_' + randomBytes(12).toString('hex'), name: 'Bash', input: {...request.lastTest}};
+  }
+  if (finalAttempt) return {type: 'text', text: 'No change made: the proposed replacement matches the current source.' +
+    (request.lastTest ? ' The latest result of ' + request.lastTest.command + ' still applies.' : '')};
+}
+
 export function parseReply(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
   const original = raw.trim();
   const fence = /^(\x60{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i.exec(original);
   // A repeated END after a complete frame carries no source. Keep the first.
-  const unwrapped = fence ? fence[2].trim() : original;
+  let unwrapped = fence ? fence[2].trim() : original;
+  // A stray END line after a JSON reply carries nothing.
+  if (!/^[ \t]*(?:EDIT|REPLACE)[ \t]/m.test(unwrapped)) unwrapped = unwrapped.replace(/\r?\n[ \t]*END[ \t]*$/, '').trim();
   const trimmed = /^[ \t]*(?:EDIT|REPLACE)[ \t]+\S+[ \t]+\d+/m.test(unwrapped)
     ? unwrapped.replace(/^END(?:[ \t]+END)+[ \t]*$/gm, 'END')
       .replace(/^(END(?:[ \t]+\S+)?)[ \t]*(?:\r?\n[ \t]*END[ \t]*)+$/gm, '$1')
@@ -1341,6 +1406,10 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   if (explicitId ? obj.request_id !== request.requestId : !matchedTurn) {
     throw staleRequestError('Meta AI reply does not match this request.');
   }
+  // A bare array of text blocks is a final answer in content-block form.
+  if (matchedTurn && Array.isArray(obj) && obj.length > 0 && obj.every(block => block?.type === 'text' && typeof block.text === 'string')) {
+    obj = {content: obj};
+  }
   // The whole envelope sometimes arrives wrapped in a one-element array.
   if (matchedTurn && Array.isArray(obj) && obj.length === 1 && obj[0] && typeof obj[0] === 'object' &&
       !Array.isArray(obj[0]) && Array.isArray(obj[0].content)) obj = obj[0];
@@ -1397,6 +1466,13 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     let input;
     try { input = lineEdit ? resolveLineEdit(b.input, request, finalAttempt) : b.input; }
     catch (error) {
+      // A replacement identical to the current source means the intended code
+      // is already there. Run the task's last test if nothing has tested the
+      // change yet; otherwise end the turn plainly instead of looping.
+      if (error.noop && matchedTurn && request.choice.type === 'auto' && !request.editFiles) {
+        const rerun = noopFollowUp(request, finalAttempt);
+        if (rerun) return rerun;
+      }
       // The handle names the file, so show the model the lines it asked to
       // replace before it edits them. Reads cannot change the workspace.
       if (error.unreadRange && matchedTurn && request.choice.type === 'auto' && !request.editFiles &&
@@ -1411,7 +1487,12 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       // If the repaired reply still has no current excerpt, read the requested
       // lines of the most recently used file instead of failing the turn. The model then edits
       // with the fresh handle. Reads cannot change the workspace.
-      const file = request.recentFiles?.at(-1);
+      // After compaction the transcript may name files only in prose: prefer
+      // a path in this reply, then a recently used file, then one mentioned in
+      // the task's text (for example the compaction summary).
+      const mentioned = text => [...String(text ?? '').matchAll(sourcePath)].map(match => match[1])
+        .filter(file => !file.includes('node_modules/'));
+      const file = mentioned(original).at(-1) ?? request.recentFiles?.at(-1) ?? request.mentionedFiles?.at(-1);
       const {start_line, end_line} = error.missingSnapshot ?? {};
       if (!error.missingSnapshot || !matchedTurn || !finalAttempt || request.choice.type !== 'auto' || request.editFiles || !file ||
           !Number.isSafeInteger(start_line) || !Number.isSafeInteger(end_line)) throw error;
@@ -1471,6 +1552,12 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
         const replacement = reindent(input.new_string.replace(/\n+$/, '').split('\n'), original, snapshot.lines, snapshot.filePath);
         input = {...input, file_path: snapshot.filePath, old_string: original.join('\n'), new_string: replacement.join('\n')};
       }
+    }
+    if (name === 'Edit' && typeof input?.old_string === 'string' && input.old_string === input.new_string &&
+        matchedTurn && request.choice.type === 'auto' && !request.editFiles) {
+      const rerun = noopFollowUp(request, finalAttempt);
+      if (rerun) return rerun;
+      throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
     }
     const repeatedTest = testCommand({name, input});
     if (request.testFailures?.has(repeatedTest) && !finalAttempt) {
