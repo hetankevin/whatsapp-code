@@ -651,6 +651,7 @@ function unfinishedWork(messages) {
   const calls = new Map();
   let failedCommand = false;
   let editedAfterFailure = false;
+  let lastFailedTest;
   let last;
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
@@ -663,13 +664,18 @@ function unfinishedWork(messages) {
       if (call.name === 'Bash') {
         failedCommand = last.failed;
         editedAfterFailure = false;
+        const test = testCommand(call);
+        if (test) lastFailedTest = last.failed ? {command: call.input.command, description: call.input.description} : undefined;
       } else if (['Edit', 'Write'].includes(call.name) && !block.is_error && failedCommand) {
         editedAfterFailure = true;
       }
     }
   }
   if (last?.name === 'Bash' && last.failed) return 'The latest command failed and this reply requested no tool. If you described a next step, request that tool now. If you are blocked, give a final answer that explains the blocker.';
-  if (editedAfterFailure) return 'Files changed after the last failed command and nothing has run since. Request the command to check the change, or give a final answer that says it is untested.';
+  if (editedAfterFailure) {
+    const message = 'Files changed after the last failed command and nothing has run since. Request the command to check the change, or give a final answer that says it is untested.';
+    return lastFailedTest ? {message, rerun: lastFailedTest} : message;
+  }
 }
 
 function latestToolStatus(messages, configuredCommand) {
@@ -1240,8 +1246,20 @@ function checkVerificationReply(request, calls, finalAttempt = false) {
   if (request.unfinishedVerification && calls.length === 0) {
     throw repairableError('The configured test is still failing. Request a tool to investigate or edit the implementation.');
   }
-  // One reminder only. A second text reply is accepted as the final answer.
-  if (request.unfinished && calls.length === 0 && !finalAttempt) throw repairableError(request.unfinished);
+  // One reminder only. A second text reply is accepted as the final answer,
+  // except that untested edits after a failing test run that same test.
+  const unfinished = typeof request.unfinished === 'object' ? request.unfinished.message : request.unfinished;
+  if (unfinished && calls.length === 0 && !finalAttempt) throw repairableError(unfinished);
+}
+
+// A final claim about untested edits becomes the native run of the test
+// that last failed in this task. Claude Code applies its Bash permissions.
+function rerunInsteadOfClaim(request, calls, finalAttempt, usage) {
+  const rerun = typeof request.unfinished === 'object' ? request.unfinished.rerun : undefined;
+  if (!rerun || calls.length || !finalAttempt) return;
+  const input = {command: rerun.command, ...(typeof rerun.description === 'string' ? {description: rerun.description} : {})};
+  if (!request.validators.get('Bash')?.(input)) return;
+  return assistantMessage(request.model, [{type: 'tool_use', id: 'toolu_rerun_' + randomBytes(12).toString('hex'), name: 'Bash', input}], usage);
 }
 
 export function parseReply(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
@@ -1298,7 +1316,8 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     const hasProtocolMarkers = /^[ \t]*(?:EDIT[ \t]+\S+[ \t]+\S+|(?:REPLACE|FILE)[ \t]+\d|<<<(?:FILE|OLD|NEW|END)>|\x60{3,}json\b)|"(?:request_id|tool_use)"|"content"\s*:/im.test(trimmed);
     if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && !startsWithJson && !hasProtocolMarkers) {
       checkVerificationReply(request, [], finalAttempt);
-      return assistantMessage(request.model, [{type: 'text', text: original}], usage);
+      return rerunInsteadOfClaim(request, [], finalAttempt, usage) ??
+        assistantMessage(request.model, [{type: 'text', text: original}], usage);
     }
     throw repairableError('Meta AI did not return complete protocol JSON or a code frame.');
   }
@@ -1420,7 +1439,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   if (request.choice.type === 'tool' && calls.some(b => b.name !== request.choice.name)) throw repairableError('Meta AI selected the wrong required tool.');
   if (request.choice.disable_parallel_tool_use && calls.length > 1) throw repairableError('Meta AI requested parallel tools when disabled.');
   checkVerificationReply(request, calls, finalAttempt);
-  return assistantMessage(request.model, blocks, usage);
+  return rerunInsteadOfClaim(request, calls, finalAttempt, usage) ?? assistantMessage(request.model, blocks, usage);
 }
 
 export function streamMessage(message, send) {

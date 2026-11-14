@@ -1124,3 +1124,22 @@ test('an oversized WhatsApp view omits the oldest tool outputs, not the task or 
   assert.ok(fitted.editableReads.some(read => read.file_path === 'r4.js'));
   assert.throws(() => prepare({tools, messages}, 3000), /configured WhatsApp limit/);
 });
+
+test('a repeated success claim after untested edits reruns the failing test natively', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const step = (id, name, input, content, is_error = false) => [
+    {role: 'assistant', content: [{type: 'tool_use', id, name, input}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: id, content, is_error}]}
+  ];
+  const edit = step('e1', 'Edit', {file_path: 'a.js', old_string: 'a', new_string: 'b'}, 'updated');
+  const turn = command => prepare({tools, messages: [{role: 'user', content: 'Fix the bug.'},
+    ...step('t1', 'Bash', {command, description: 'Run tests'}, '1 failing', true), ...edit]});
+  const claim = 'Fixed. The tests should pass now.';
+  const tested = turn('npm test');
+  assert.throws(() => parseReply(claim, tested, {matchedTurn: true}), /nothing has run since/);
+  const [rerun] = parseReply(claim, tested, {matchedTurn: true, finalAttempt: true}).content;
+  assert.deepEqual([rerun.name, rerun.input], ['Bash', {command: 'npm test', description: 'Run tests'}]);
+  // Only a recognized test command that already failed in this task is rerun.
+  const other = turn('make deploy');
+  assert.equal(parseReply(claim, other, {matchedTurn: true, finalAttempt: true}).content[0].type, 'text');
+});
