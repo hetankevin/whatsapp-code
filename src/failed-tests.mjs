@@ -17,7 +17,9 @@ function failureExcerpt(content) {
   const text = typeof content === 'string' ? content : Array.isArray(content)
     ? content.filter(block => block.type === 'text').map(block => block.text).join('\n')
     : '';
-  const lines = text.split('\n');
+  // Multi-step test commands can print a failure heading before another
+  // test process dumps dependency warnings. Preserve the actual assertion.
+  const lines = text.split('\n').filter(line => !/^\(node:\d+\) Warning:|^\(Use `node --trace-warnings /.test(line));
   const failure = lines.findIndex(line => /^(?:not ok\b|FAIL\b|E\s{2,}|AssertionError\b|(?:# )?SyntaxError:|[ \t]+\d+\) )/.test(line));
   const syntaxError = /^(?:# )?SyntaxError:/.test(lines[failure] ?? '');
   const location = syntaxError ? lines.findLastIndex((line, index) => index < failure &&

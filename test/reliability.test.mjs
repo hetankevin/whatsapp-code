@@ -493,6 +493,22 @@ test('a local Mocha regression carries its failure through a native Read', () =>
     error => error.repairable && error.testFailure.includes('TypeError: getConfig'));
 });
 
+test('a test failure heading does not hide the assertion behind Node warnings', () => {
+  const command = 'npm test';
+  const call = {type:'tool_use',name:'Bash',id:'test',input:{command}};
+  const warnings = '(node:123) Warning: Accessing a property inside circular dependency\n'.repeat(30);
+  const request = prepare({tools:[{name:'Bash',input_schema:{type:'object'}}],messages:[
+    {role:'user',content:'Fix the regression.'},
+    {role:'assistant',content:[call]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:call.id,is_error:true,
+      content:'FAIL Existing constructor behavior\n' + warnings +
+        '  1) should preserve the original options:\n    AssertionError: objects differ\n    + expected - actual'}]}
+  ]});
+  const reply = JSON.stringify({request_id:request.requestId,content:[call]});
+  assert.throws(() => parseReply(reply,request), error => error.testFailure.includes('FAIL Existing constructor behavior') &&
+    error.testFailure.includes('AssertionError: objects differ') && !error.testFailure.includes('Warning:'));
+});
+
 test('encoded indentation survives CRLF framing without changing source characters', () => {
   const request = lineEditRequest();
   const nonce = request.requestId;
