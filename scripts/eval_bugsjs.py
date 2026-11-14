@@ -131,6 +131,25 @@ def analyse(events, cmd):
     }
 
 
+def wait_ready(limit=600):
+    """Wait for the paired gateway to report WhatsApp ready. Returns seconds waited or None."""
+    import urllib.request
+    state = Path(os.environ.get('WA_STATE_DIR') or Path.home() / 'Library/Application Support/whatsapp-code')
+    token = (state / 'gateway-token').read_text().strip()
+    port = os.environ.get('WA_PORT', '8787')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    begin = time.time()
+    while time.time() - begin < limit:
+        try:
+            request = urllib.request.Request(f'http://127.0.0.1:{port}/health', headers={'x-api-key': token})
+            if json.loads(opener.open(request, timeout=5).read()).get('ready'):
+                return round(time.time() - begin, 1)
+        except Exception:
+            pass
+        time.sleep(5)
+    return None
+
+
 def gateway_log_delta(log, start):
     if not log or not log.exists():
         return []
@@ -420,7 +439,13 @@ def main():
                 {'hasCompletedOnboarding': True, 'projects': {str(project): {'hasTrustDialogAccepted': True},
                                                               str(project.resolve()): {'hasTrustDialogAccepted': True}}}))
             log_start = args.gateway_log.stat().st_size if args.gateway_log and args.gateway_log.exists() else 0
-            print('running', args.label, case['id'], k, args.mode, flush=True)
+            waited = wait_ready()
+            if waited is None:
+                Path(stem + '.json').write_text(json.dumps(dict(case=case['id'], label=args.label, repeat=k,
+                    blocked='gateway not ready for 600 s', passed=False)) + '\n')
+                print('blocked', case['id'], k, 'gateway not ready', flush=True)
+                continue
+            print('running', args.label, case['id'], k, args.mode, 'waited', waited, flush=True)
             run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, args.resume_prompt)
             facts = analyse(run.pop('events'), case['cmd'])
             # Background sessions edit inside a native worktree under .claude/worktrees.
