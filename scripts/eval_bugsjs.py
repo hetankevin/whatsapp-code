@@ -444,6 +444,9 @@ def main():
                   'edits', facts['edits_ok'], 'tests', facts['native_tests'], 'target', judged.get('target_pass'),
                   'parity', judged.get('parity'), 'preserve', (judged.get('preserve') or {}).get('ok'),
                   'err', run['error'], flush=True)
+            # Background sessions leave a transient Claude Code daemon tied to
+            # this run's private config directory. Stop it before cleanup.
+            subprocess.run(['pkill', '-f', str(holder)], capture_output=True)
             shutil.rmtree(holder, ignore_errors=True)
 
 
