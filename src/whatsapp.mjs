@@ -89,7 +89,7 @@ export class WhatsApp {
     // and inner edits are still being composed, so wait for the final event.
     clearTimeout(p.settle);
     if (['first', 'inner'].includes(e.edit)) return;
-    const text = extractText(e.message, Boolean(p.request.editFiles || p.request.useVerificationContext));
+    const text = extractText(e.message, Boolean(p.request.editFiles || p.request.useVerificationContext || p.request.preserveCodeBlocks));
     const final = ['last', 'full'].includes(e.edit);
     if (!text && !final) return;
     p.lastError = null;

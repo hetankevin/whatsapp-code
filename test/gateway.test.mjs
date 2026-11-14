@@ -254,3 +254,21 @@ test('disconnecting while queued skips the WhatsApp call', async () => {
     return parseReply(reply(request, [{type:'text',text:'done'}]), request);
   });
 });
+test('raw experiment prompts pass through only when enabled', async () => {
+  const sent = [];
+  const backend = {ready: true, status: 'ready', bot: 'b', async complete(request) {
+    sent.push(request.prompt); return parseReply('plain answer', request, {matchedTurn: true}); }};
+  for (const rawPrompts of [false, true]) {
+    const server = createGateway({backend, token: 't'.repeat(64), rawPrompts});
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const r = await fetch('http://127.0.0.1:' + server.address().port + '/v1/messages', {method: 'POST',
+      headers: {'content-type': 'application/json', 'x-api-key': 't'.repeat(64), 'x-wa-raw': '1'},
+      body: JSON.stringify({prompt: 'Exactly this text.'})});
+    if (rawPrompts) {
+      assert.equal(r.status, 200);
+      assert.equal((await r.json()).content[0].text, 'plain answer');
+      assert.equal(sent.at(-1), 'Exactly this text.');
+    } else assert.equal(r.status, 400);
+    server.close();
+  }
+});

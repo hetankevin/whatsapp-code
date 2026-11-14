@@ -6,7 +6,7 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { GatewayError, prepare, streamMessage } from './protocol.mjs';
 
-export function createGateway({backend, token, maxChars = 60000, snapshotContext = false}) {
+export function createGateway({backend, token, maxChars = 60000, snapshotContext = false, rawPrompts = false}) {
   let busy = false;
   const waiting = new Set();
   const cancelled = () => new GatewayError('Request cancelled.', 499);
@@ -59,6 +59,21 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       const chunks=[]; let size=0;
       for await (const chunk of req) {size+=chunk.length; if(size>1024*1024) throw new GatewayError('Request too large.',413); chunks.push(chunk);}
       let body; try {body=JSON.parse(Buffer.concat(chunks));} catch {throw new GatewayError('Invalid JSON.');}
+      // Opt-in experiment path (server started with WA_EXPERIMENT_RAW=1): send
+      // one prompt exactly as given, with no coding protocol, and return text.
+      if (rawPrompts && req.headers['x-wa-raw'] === '1') {
+        if (typeof body?.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > maxChars) {
+          throw new GatewayError('Raw experiment requests need a nonempty prompt within the size limit.');
+        }
+        if (!backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`, 503);
+        const controller = new AbortController();
+        res.once('close', () => {if (!res.writableEnded) controller.abort();});
+        await acquire(controller.signal);
+        locked = true;
+        const raw = {prompt: body.prompt, textOnly: true, model: 'meta-ai-whatsapp', requestId: randomBytes(12).toString('hex'),
+          validators: new Map(), editableReads: [], maxChars, preserveCodeBlocks: true};
+        return sendJSON(200, await backend.complete(raw, controller.signal));
+      }
       let editFiles;
       const requestedFiles = req.headers['x-wa-edit-files'];
       const requestedFile = req.headers['x-wa-edit-file'];
@@ -166,7 +181,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const port=Number(process.env.WA_PORT??8787);
   const backend=new WhatsApp({root,stateDir});
   const snapshotContext = process.env.WA_SNAPSHOT_CONTEXT === '1';
-  const server=createGateway({backend,token,snapshotContext});
+  const server=createGateway({backend,token,snapshotContext,rawPrompts:process.env.WA_EXPERIMENT_RAW==='1'});
   server.requestTimeout=150000;
   server.on('error',async e=>{console.error(e.message);await backend.close();process.exit(1);});
   server.listen(port,'127.0.0.1',()=>console.error(`whatsapp-code listening on http://127.0.0.1:${port}`));
