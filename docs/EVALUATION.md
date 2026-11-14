@@ -14,7 +14,7 @@ Raw chats, prompts, transcripts, candidate diffs, fixture copies, reply diagnost
 | Go (transport build) | 1.26.11 |
 | Bot | 867051314767696@bot (Meta AI) |
 | Baseline adapter | 7e33e34 |
-| Frozen revisions | G = acc16dc, H = 08bda71 (default-mode gateway identical to 2337fbd); later revision I = 8736083 |
+| Frozen revisions | G = acc16dc, H = 08bda71 (default-mode gateway identical to 2337fbd); later revisions I 8736083, J 4039702, K ab3aeba, L 7ab101e, M a6e086a, N accb621, final O 71ed115 |
 | Client context window | 26,000 tokens (launcher default) |
 | WhatsApp prompt cap | 60,000 characters |
 
@@ -67,7 +67,7 @@ Run one batch at a time: the gateway serializes requests through one WhatsApp ch
 
 ## Decision
 
-**Not yet usable as the model for ordinary Claude Code coding sessions.** No tested configuration made repository repair reliable. Across 14 gateway revisions and every invocation mode, **1 of 131** scored BugsJS dev attempts passed (Express 20, background session), and **0 of 21** holdout attempts passed (14 sealed on frozen revisions, 7 unsealed reruns). Small self-contained fixes work: the TTL fix passed end to end in 12 of 21 attempts overall and 2 of 2 on each of the last four revisions; the CSV parser passed once in 21. Plain Q&A works (5 of 6 on the final measurement). Asking for Meta AI's "think hard" mode had no measurable effect.
+**Not yet usable as the model for ordinary Claude Code coding sessions.** No tested configuration made repository repair reliable. Across 13 gateway revisions with native runs and every invocation mode, **1 of 138** scored BugsJS dev attempts passed (Express 20, background session), and **0 of 21** holdout attempts passed (14 sealed on frozen revisions, 7 unsealed reruns). Small self-contained fixes work part of the time: the TTL fix passed end to end in 12 of 23 attempts (12 of 18 from revision G onward); the CSV parser passed once in 23. Plain Q&A works (5 of 6 on the final measurement). Asking for Meta AI's "think hard" mode had no measurable effect.
 
 The native mechanics run: background sessions in worktrees, the interactive terminal, native compaction and resume, plain Q&A, and a fresh install. They are not fully robust: undecodable replies still end some sessions, and the edit format matters (see the isolation experiment). A controlled comparison of a direct request against the gateway's presentation, with identical inputs, showed both failure kinds: Meta AI fails to infer correct ESLint and CSV fixes in either presentation, and for Express 20 the presentation itself blocked a change Meta AI could describe. Gateway changes made from that evidence raised correct first proposals on Express 20 from 0 of 9 to 2 of 3, but did not raise end-to-end repair rates in native sessions.
 
@@ -93,6 +93,11 @@ All attempts are listed in the per-batch tables produced by `scripts/summarize_e
 | H 08bda71 | configured verification | 7 | 0 | 0 | 7 |
 | I 8736083 | headless | 7 | 0 | 0 | 0 |
 | I 8736083 | background | 4 | 0 | 0 | 0 |
+| J 4039702 | headless | 7 | 0 | 0 | 2 |
+| M a6e086a | headless | 7 | 0 | 0 | 5 (new FILE-edit rejections) |
+| N accb621 | headless | 7 | 0 | 0 | 3 |
+| N accb621 | background | 4 | 0 | 0 | 2 |
+| O 71ed115 | headless | 7 | 0 | 0 | 1 |
 
 Intermediate development revisions (afd4689, 3810f48, 97fab17, b3cd53b, 2a65a90) scored 0 on all 36 of their completed headless and background attempts; they are kept in the ledger, not in this table.
 
@@ -104,6 +109,7 @@ The passing attempt read the response module, made one edit inside its native ba
 |---|---|---|---|---|
 | G | 7 | 0 | 0 | 6 of 7 used the full 300 s budget |
 | H | 7 | 0 | 0 | 4 of 7 used the full 300 s budget |
+| N (unsealed rerun) | 7 | 0 | 0 | 4 ended on unmatched FILE-edit originals; Express 1 passed its target and preservation but broke another test in its file |
 
 ### Synthetic tasks (end-to-end pass / correct but unverified)
 
@@ -115,6 +121,10 @@ The passing attempt read the response module, made one edit inside its native ba
 | H think-hard | 2/2 | 0/2 (1 correct, lost to a no-op edit loop fixed in I) |
 | H configured | 2/2 | 0/2 |
 | I | 1/2 (1 more correct, untested) | 0/2 |
+| J | 1/2 | 1/2 |
+| M | 1/2 | 0/2 |
+| N | 2/2 | 0/2 |
+| O (final) | 0/2 (1 correct, untested) | 0/2 |
 
 ### Long session, native compaction, and resume
 
