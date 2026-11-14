@@ -683,6 +683,7 @@ function unfinishedWork(messages) {
   const calls = new Map();
   let failedCommand = false;
   let editedAfterFailure = false;
+  let editedUntested = false;
   let lastFailedTest;
   let last;
   for (const message of messages) {
@@ -698,9 +699,11 @@ function unfinishedWork(messages) {
         editedAfterFailure = false;
         const test = testCommand(call);
         if (test) lastFailedTest = last.failed ? {command: call.input.command, description: call.input.description} : undefined;
-      } else if (['Edit', 'Write'].includes(call.name) && !block.is_error && failedCommand) {
-        editedAfterFailure = true;
+      } else if (['Edit', 'Write'].includes(call.name) && !block.is_error) {
+        if (failedCommand) editedAfterFailure = true;
+        else editedUntested = true;
       }
+      if (call.name === 'Bash') editedUntested = false;
     }
   }
   if (last?.name === 'Bash' && last.failed) return 'The latest command failed and this reply requested no tool. If you described a next step, request that tool now. If you are blocked, give a final answer that explains the blocker.';
@@ -708,6 +711,7 @@ function unfinishedWork(messages) {
     const message = 'Files changed after the last failed command and nothing has run since. Request the command to check the change, or give a final answer that says it is untested.';
     return lastFailedTest ? {message, rerun: lastFailedTest} : message;
   }
+  if (editedUntested) return 'Files changed and no command has run since. Run the project tests to check the change, or give a final answer that says it is untested.';
 }
 
 function latestToolStatus(messages, configuredCommand) {

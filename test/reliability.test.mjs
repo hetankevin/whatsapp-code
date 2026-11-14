@@ -1253,3 +1253,17 @@ test('the configured edit budget ends with an explicit unsuccessful answer', asy
   const request = prepare({tools,messages},60000,false,undefined,{command:'make check'});
   assert.match(request.localResult.content[0].text, /still fails after eight edit attempts/);
 });
+
+test('edits with no command afterward get one reminder to test', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const edit = [
+    {role:'assistant',content:[{type:'tool_use',name:'Edit',id:'e1',input:{file_path:'a.js',old_string:'a',new_string:'b'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'e1',content:'updated'}]}];
+  const request = prepare({tools, messages: [{role: 'user', content: 'Fix the cache.'}, ...edit]});
+  assert.throws(() => parseReply('Fixed.', request, {matchedTurn: true}), /no command has run since/);
+  assert.equal(parseReply('Fixed; untested.', request, {matchedTurn: true, finalAttempt: true}).content[0].type, 'text');
+  const tested = prepare({tools, messages: [{role: 'user', content: 'Fix the cache.'}, ...edit,
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'t1',input:{command:'node --test'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'# pass 3'}]}]});
+  assert.equal(parseReply('Fixed and tested.', tested, {matchedTurn: true}).content[0].type, 'text');
+});
