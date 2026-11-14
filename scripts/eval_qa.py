@@ -24,7 +24,7 @@ GENERAL = [
 ]
 REPO = [
     ('send-file', 'Which file in this checkout defines res.send? Reply with the path relative to the project root.', r'lib/response\.js'),
-    ('param-file', 'Which file in this checkout implements app.param or router.param handling? Reply with the relative path of the router implementation.', r'lib/router/index\.js'),
+    ('param-file', 'Which file in this checkout defines the router prototype method that registers parameter callbacks (proto.param)? Reply with the path relative to the project root.', r'lib/router/index\.js'),
 ]
 
 
@@ -65,6 +65,11 @@ def main():
             repo = holder / 'repo'
             subprocess.run(['cp', '-cR', str(args.repo), str(repo)], check=True)
             shutil.rmtree(repo / '.git', ignore_errors=True)
+            # A normal checkout is a git repository, so native Grep honors
+            # .gitignore and skips node_modules.
+            (repo / '.gitignore').exists() or (repo / '.gitignore').write_text('node_modules\n')
+            for git in (['init', '-q'], ['add', '-A'], ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']):
+                subprocess.run(['git', *git], cwd=repo, check=True, capture_output=True)
             projects[str(repo)] = {'hasTrustDialogAccepted': True}
         (config / '.claude.json').write_text(json.dumps({'hasCompletedOnboarding': True, 'projects': projects}))
         env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(config)}
