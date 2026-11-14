@@ -418,7 +418,8 @@ test('range edits reject unobserved lines, stale snapshots, and parallel calls',
   assert.throws(() => parseReply(reply(request,call({start_line:6})),request), /outside/);
   assert.throws(() => parseReply(reply(request,call({end_line:10})),request), /outside/);
   assert.throws(() => parseReply(reply(request,call({new_string:'  return "old";'})),request), /unchanged/);
-  assert.equal(parseReply(reply(request,call({new_string:'  return "old";'})),request,{finalAttempt:true}).content[0].name, 'Edit');
+  // With no test in the task, a final no-op ends the turn plainly.
+  assert.match(parseReply(reply(request,call({new_string:'  return "old";'})),request,{matchedTurn:true,finalAttempt:true}).content[0].text, /No change made/);
   assert.throws(() => parseReply(reply(request,call(),call()),request), /without other tools/);
   assert.equal(parseReply(reply(request,call()),request).content[0].input.new_string, 'const a = 1;\n}');
   const stale = lineEditRequest([{role:'assistant',content:[
@@ -1219,4 +1220,36 @@ test('text-only replies in array or after prose are final answers', () => {
   assert.deepEqual(array.content, [{type: 'text', text: 'Fix applied.'}]);
   const prose = parseReply('Done.\n{"content":[{"type":"text","text":"Done."}]}', request, {matchedTurn: true});
   assert.equal(prose.content[0].text, 'Done.');
+});
+
+test('a no-op edit runs the untested change or ends plainly instead of looping', () => {
+  const run = (id, content, is_error) => [
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id,input:{command:'node --test',description:'Run tests'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:id,content,is_error}]}];
+  const edit = [
+    {role:'assistant',content:[{type:'tool_use',name:'Edit',id:'e1',input:{file_path:'other.js',old_string:'a',new_string:'b'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'e1',content:'updated'}]}];
+  const noop = request => 'EDIT ' + request.editableReads[0].read_id + ' 8 8\n  return "old";\nEND';
+  const untested = lineEditRequest([...run('t1', '1 failing', true), ...edit]);
+  const [bash] = parseReply(noop(untested), untested, {matchedTurn: true}).content;
+  assert.deepEqual([bash.name, bash.input], ['Bash', {command: 'node --test', description: 'Run tests'}]);
+  const tested = lineEditRequest([...edit, ...run('t2', '1 failing', true)]);
+  assert.throws(() => parseReply(noop(tested), tested, {matchedTurn: true}), /unchanged/);
+  assert.match(parseReply(noop(tested), tested, {matchedTurn: true, finalAttempt: true}).content[0].text, /still applies/);
+  const native = JSON.stringify({content:[{type:'tool_use',name:'Edit',input:{file_path:'module.js',old_string:'x',new_string:'x'}}]});
+  assert.equal(parseReply(native, untested, {matchedTurn: true}).content[0].name, 'Bash');
+});
+
+test('the configured edit budget ends with an explicit unsuccessful answer', async () => {
+  const tools = ['Read','Edit','Bash'].map(name => ({name,input_schema:{type:'object'}}));
+  const messages = [{role:'user',content:'Fix it.'}];
+  for (let i = 0; i < 8; i++) messages.push(
+    {role:'assistant',content:[{type:'tool_use',name:'Edit',id:'e'+i,input:{file_path:'a.js',old_string:'a'+i,new_string:'b'+i}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'e'+i,content:'ok'}]},
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'t'+i,input:{command:'make check'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'t'+i,content:'1 failing\n    at f (a.js:1:2)',is_error:true}]},
+    {role:'assistant',content:[{type:'tool_use',name:'Read',id:'r'+i,input:{file_path:'a.js'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'r'+i,content:'1\tlet a = ' + i + ';'}]});
+  const request = prepare({tools,messages},60000,false,undefined,{command:'make check'});
+  assert.match(request.localResult.content[0].text, /still fails after eight edit attempts/);
 });

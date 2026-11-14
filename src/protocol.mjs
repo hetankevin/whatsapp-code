@@ -384,7 +384,11 @@ function resolveLineEdit(input, request, finalAttempt = false) {
   const new_string = updated.join('\n');
   // On the last attempt, let Claude Code's native Edit report the no-op as a
   // tool error the model can see, instead of ending the session here.
-  if (new_string === old_string && !finalAttempt) throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
+  if (new_string === old_string) {
+    const error = repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
+    error.noop = true;
+    throw error;
+  }
   return {file_path: filePath, old_string, new_string};
 }
 
@@ -1031,7 +1035,10 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const editCount = useVerificationContext ? taskMessages.reduce((count, message) =>
     count + (message.role === 'assistant' && Array.isArray(message.content)
       ? message.content.filter(block => block.type === 'tool_use' && block.name === 'Edit').length : 0), 0) : 0;
-  if (editCount >= 8) throw new GatewayError('The configured test is still failing after eight edit attempts.', 502);
+  // The configured edit budget is spent: finish with an explicit unsuccessful
+  // answer rather than an API error that suggests retrying.
+  if (editCount >= 8) return {localResult: assistantMessage(model, [{type: 'text',
+    text: 'Stopped: ' + editOptions.command + ' still fails after eight edit attempts. The latest test output shows the remaining failure.'}])};
   const numberedSource = snapshot => snapshot?.lines
     .map((line, index) => (snapshot.first + index) + '\t' + line).join('\n');
   const [currentRead] = snapshots.values();
@@ -1189,6 +1196,24 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
     ? unfinishedWork(taskMessages) : undefined;
+  // The last test command run in this task, and whether the workspace
+  // changed after it (a successful Edit or Write).
+  let lastTest, changedSinceTest = false;
+  {
+    const calls = new Map();
+    for (const message of taskMessages) {
+      if (!Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if (block.type === 'tool_use') calls.set(block.id, block);
+        if (block.type !== 'tool_result') continue;
+        const call = calls.get(block.tool_use_id);
+        if (call?.name === 'Bash' && testCommand(call, editOptions.command)) {
+          lastTest = {command: call.input.command, ...(typeof call.input.description === 'string' ? {description: call.input.description} : {})};
+          changedSinceTest = false;
+        } else if (['Edit', 'Write'].includes(call?.name) && !block.is_error) changedSinceTest = true;
+      }
+    }
+  }
   // Files this task has read or changed, most recent last.
   const recentFiles = [...new Set(taskMessages.flatMap(message =>
     message.role === 'assistant' && Array.isArray(message.content) ? message.content
@@ -1200,6 +1225,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     .flatMap(text => [...text.matchAll(sourcePath)].map(match => match[1])))
     .filter(file => !file.includes('node_modules/'));
   return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles,
+    lastTest, changedSinceTest,
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -1303,6 +1329,14 @@ function rerunInsteadOfClaim(request, calls, finalAttempt, usage) {
   const input = {command: rerun.command, ...(typeof rerun.description === 'string' ? {description: rerun.description} : {})};
   if (!request.validators.get('Bash')?.(input)) return;
   return assistantMessage(request.model, [{type: 'tool_use', id: 'toolu_rerun_' + randomBytes(12).toString('hex'), name: 'Bash', input}], usage);
+}
+
+function noopFollowUp(request, finalAttempt) {
+  if (request.lastTest && request.changedSinceTest && request.validators.get('Bash')?.(request.lastTest)) {
+    return {type: 'tool_use', id: 'toolu_verify_' + randomBytes(12).toString('hex'), name: 'Bash', input: {...request.lastTest}};
+  }
+  if (finalAttempt) return {type: 'text', text: 'No change made: the proposed replacement matches the current source.' +
+    (request.lastTest ? ' The latest result of ' + request.lastTest.command + ' still applies.' : '')};
 }
 
 export function parseReply(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
@@ -1432,6 +1466,13 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     let input;
     try { input = lineEdit ? resolveLineEdit(b.input, request, finalAttempt) : b.input; }
     catch (error) {
+      // A replacement identical to the current source means the intended code
+      // is already there. Run the task's last test if nothing has tested the
+      // change yet; otherwise end the turn plainly instead of looping.
+      if (error.noop && matchedTurn && request.choice.type === 'auto' && !request.editFiles) {
+        const rerun = noopFollowUp(request, finalAttempt);
+        if (rerun) return rerun;
+      }
       // The handle names the file, so show the model the lines it asked to
       // replace before it edits them. Reads cannot change the workspace.
       if (error.unreadRange && matchedTurn && request.choice.type === 'auto' && !request.editFiles &&
@@ -1511,6 +1552,12 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
         const replacement = reindent(input.new_string.replace(/\n+$/, '').split('\n'), original, snapshot.lines, snapshot.filePath);
         input = {...input, file_path: snapshot.filePath, old_string: original.join('\n'), new_string: replacement.join('\n')};
       }
+    }
+    if (name === 'Edit' && typeof input?.old_string === 'string' && input.old_string === input.new_string &&
+        matchedTurn && request.choice.type === 'auto' && !request.editFiles) {
+      const rerun = noopFollowUp(request, finalAttempt);
+      if (rerun) return rerun;
+      throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
     }
     const repeatedTest = testCommand({name, input});
     if (request.testFailures?.has(repeatedTest) && !finalAttempt) {

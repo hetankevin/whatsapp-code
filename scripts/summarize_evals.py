@@ -13,6 +13,7 @@ diffs, or reply text are read or printed. Each attempt gets a failure layer:
               native test after a correct change
   patch       the session ran, but the patch failed independent checks
   context     the prompt exceeded the WhatsApp limit or compaction thrashed
+  budget      the configured verification mode used its eight edits with the test still failing
   timeout     the run hit its wall-clock budget
 """
 import argparse
@@ -29,6 +30,8 @@ def layer(report):
     final = report.get('final') or ''
     if report.get('timed_out'):
         return 'timeout'
+    if 'after eight edit attempts' in error or 'after eight edit attempts' in final:
+        return 'budget'
     if any(text in error or text in final for text in ('Request too large', 'thrashing', 'Context is')):
         return 'context'
     if 'snapshot' in error or 'stale' in error.lower() or 'does not match this request' in error:
