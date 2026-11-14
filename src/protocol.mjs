@@ -1080,12 +1080,24 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   if (explicitId ? obj.request_id !== request.requestId : !matchedTurn) {
     throw staleRequestError('Meta AI reply does not match this request.');
   }
-  // Some WhatsApp replies send native Read/Grep/Glob blocks directly. Keep
-  // this compatibility path read-only and let the usual validators assign IDs.
+  // Some WhatsApp replies send the tool_use blocks without the content
+  // envelope. Treat them exactly like the envelope: same tools, same checks.
   if (matchedTurn && request.choice.type === 'auto' && !request.editFiles &&
-      Array.isArray(obj) && obj.length > 0 &&
-      obj.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name))) {
+      Array.isArray(obj) && obj.length > 0 && obj.every(block => block?.type === 'tool_use')) {
     obj = {content: obj};
+  }
+  // A line edit sometimes arrives as JSON named Edit with a read_id and line
+  // range instead of an EDIT frame. Normalize it to the same line-edit path.
+  if (request.validateLineEdit && Array.isArray(obj?.content)) {
+    obj.content = obj.content.map(block => {
+      const input = block?.input;
+      if (block?.type !== 'tool_use' || block.name !== 'Edit' || !input || typeof input !== 'object' ||
+          typeof input.read_id !== 'string' || Object.hasOwn(input, 'old_string')) return block;
+      const start_line = input.start_line ?? input.start;
+      const end_line = input.end_line ?? input.end;
+      const new_string = input.new_string ?? input.replacement;
+      return {...block, name: 'EditLines', input: {read_id: input.read_id, start_line, end_line, new_string}};
+    });
   }
   if (!Array.isArray(obj?.content) || !obj.content.length) {
     throw repairableError('Meta AI returned no content.');

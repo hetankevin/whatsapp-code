@@ -956,3 +956,19 @@ test('a repeated END before a later tool envelope keeps only the first edit', ()
   assert.equal(content.length, 1);
   assert.equal(content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
 });
+
+test('bare tool arrays and JSON line edits use the ordinary validation path', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const plain = prepare({tools, messages: [{role: 'user', content: 'Run the tests.'}]});
+  const [bash] = parseReply('[{"type":"tool_use","id":"toolu_x","name":"Bash","input":{"command":"node --test"}}]', plain, {matchedTurn: true}).content;
+  assert.equal(bash.name, 'Bash');
+  assert.notEqual(bash.id, 'toolu_x');
+  assert.throws(() => parseReply('[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]', plain), /does not match/);
+  const request = lineEditRequest();
+  const json = read_id => JSON.stringify({content: [{type: 'tool_use', name: 'Edit',
+    input: {read_id, start: 8, end: 8, replacement: '  return "new";'}}]});
+  const [edit] = parseReply(json('read-x'), request, {matchedTurn: true}).content;
+  assert.equal(edit.name, 'Edit');
+  assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
+  assert.throws(() => parseReply(json('read-x').replace('"end":8', '"end":12'), request, {matchedTurn: true}), /outside/);
+});

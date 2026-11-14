@@ -57,7 +57,10 @@ test('matched replies can carry a read-only call after an explanation', () => {
  assert.equal(read.name,'Read');
  assert.notEqual(read.id,'toolu_supplied_by_bot');
  assert.throws(()=>parseReply(direct,r), /does not match/);
- assert.throws(()=>parseReply(JSON.stringify([call,{...call,name:'Bash'}]),r,{matchedTurn:true}), /no content/);
+ // A bare array behaves like the same blocks inside the content envelope.
+ const pair=[call,{type:'tool_use',name:'Bash',input:{command:'npm test'}}];
+ assert.deepEqual(parseReply(JSON.stringify(pair),r,{matchedTurn:true}).content.map(b=>b.name),
+   parseReply(JSON.stringify({content:pair}),r,{matchedTurn:true}).content.map(b=>b.name));
  assert.throws(()=>parseReply(direct.replace('"example.txt"','42'),r,{matchedTurn:true}), /invalid arguments/);
 });
 test('matched Grep replies preserve unescaped regex syntax', () => {
