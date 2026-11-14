@@ -76,9 +76,13 @@ test('matched Grep replies preserve unescaped regex syntax', () => {
    assert.equal(call.input.pattern, pattern);
  }
  assert.equal(parseReply(grep.replace(pattern, String.raw`class\\s*\{`), r, matched).content[0].input.pattern, pattern);
- assert.throws(() => parseReply(grep, r), /complete protocol/);
- assert.throws(() => parseReply(grep.replace('Grep','Read'), r, matched), /complete protocol/);
- assert.throws(() => parseReply(grep.replace('"pattern"','"file_path"'), r, matched), /complete protocol/);
+ // Literal backslashes are recovered in any string, but identity and the
+ // native tool schemas still apply.
+ assert.throws(() => parseReply(grep, r), /does not match/);
+ assert.throws(() => parseReply(grep.replace('Grep','Read'), r, matched), /invalid arguments/);
+ assert.throws(() => parseReply(grep.replace('"pattern"','"file_path"'), r, matched), /invalid arguments/);
+ const bare = String.raw`[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"Router\s*\("}}]`;
+ assert.equal(parseReply(bare, r, matched).content[0].input.pattern, String.raw`Router\s*\(`);
  assert.throws(() => parseReply(grep.replace('{"content"','{"request_id":"old","content"'), r, matched), /does not match/);
 });
 test('required tool selection and no-tools are enforced',()=>{

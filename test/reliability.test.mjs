@@ -1083,3 +1083,18 @@ test('a line edit that changes bracket balance gets one repair', () => {
   const commented = 'EDIT ' + handle + ' 8 8\n  return "new"; // closes }\nEND';
   assert.equal(parseReply(commented, request, {matchedTurn: true}).content[0].name, 'Edit');
 });
+
+test('an EDIT after a prose line and fenced JSON after prose are recovered', () => {
+  const request = lineEditRequest();
+  const handle = request.editableReads[0].read_id;
+  const prose = 'The return value is wrong. I will edit it.\nEDIT ' + handle + ' 8 8\n  return "new";\nEND\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"node --test"}}]}';
+  const {content} = parseReply(prose, request, {matchedTurn: true});
+  assert.equal(content.length, 1);
+  assert.equal(content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+  const tools = ['Read', 'Grep', 'Edit'].map(name => ({name, input_schema: {type: 'object'}}));
+  const plain = prepare({tools, messages: [{role: 'user', content: 'Find the loader.'}]});
+  const fenced = 'Let us look at the loader.\n\n```json\n{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"load\\\\("}}]}\n```';
+  assert.equal(parseReply(fenced, plain, {matchedTurn: true}).content[0].input.pattern, 'load\\(');
+  const fencedBash = 'Run it.\n\n```\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}\n```';
+  assert.throws(() => parseReply(fencedBash, plain, {matchedTurn: true}), /protocol JSON|unknown/);
+});

@@ -162,12 +162,36 @@ function closeJSON(text) {
   return text.trimEnd() + stack.reverse().join('');
 }
 
+// A backslash before a character JSON does not escape (as in a regex such as
+// \s or \() can only be a literal backslash. Double it inside strings.
+function escapeLiteralBackslashes(text) {
+  let out = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted && c === '\\') {
+      const next = text[i + 1];
+      if (next !== undefined && '"\\/bfnrtu'.includes(next) && !(next === 'u' && !/^[\da-fA-F]{4}$/.test(text.slice(i + 2, i + 6)))) {
+        out += c + next; i++;
+      } else out += '\\\\';
+      continue;
+    }
+    if (c === '"') quoted = !quoted;
+    out += c;
+  }
+  return out;
+}
+
 function parseJSON(text) {
   try { return JSON.parse(text); }
   catch (error) {
-    const closed = closeJSON(text);
-    if (closed === undefined) throw error;
-    return JSON.parse(closed);
+    for (const candidate of [text, escapeLiteralBackslashes(text)]) {
+      for (const attempt of [candidate, closeJSON(candidate)]) {
+        if (attempt === undefined || attempt === text) continue;
+        try { return JSON.parse(attempt); } catch {}
+      }
+    }
+    throw error;
   }
 }
 
@@ -474,13 +498,13 @@ function firstEditFrame(text) {
 function firstExplainedEdit(text) {
   // Recover an ordinary frame announced in prose. Stop at the first END,
   // and only accept a tail if it is clearly announcing another action.
-  const header = /(?:\r?\n[ \t]*\r?\n|:\r?\n)(?=EDIT[ \t]+\S+[ \t]+\d+[ \t]+\d+)/.exec(text);
+  const header = /\r?\n(?:[ \t]*\r?\n)*(?=EDIT[ \t]+\S+[ \t]+\d+[ \t]+\d+[ \t]*\r?\n)/.exec(text);
   if (!header || hasEarlierAction(text.slice(0, header.index))) return;
   const candidate = text.slice(header.index + header[0].length);
   const footer = /\r?\n(END(?:[ \t]+[0-9a-f]{24})?)[ \t]*(\r?\n|$)/.exec(candidate);
   if (!footer || /^EDIT[^\r\n]*\r?\n[ \t]*\x60{3}/.test(candidate)) return;
   const tail = candidate.slice(footer.index + footer[0].length);
-  if (tail && !/^[ \t]*\r?\n(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{[ \t]*"content"\s*:)/.test(tail)) return;
+  if (tail && !/^(?:[ \t]*\r?\n)?(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{[ \t]*"content"\s*:)/.test(tail)) return;
   return parseLineFrame(candidate.slice(0, footer.index + footer[0].length - footer[2].length).trimEnd());
 }
 
@@ -1136,6 +1160,9 @@ function parseReadOnlyEnvelope(text) {
 }
 
 function parseFirstReadOnlyCall(text) {
+  // Prose followed by one fenced JSON envelope: use the envelope.
+  const fenced = /^([\s\S]*?)\r?\n[ \t]*\x60{3}(?:json)?[ \t]*\r?\n(\{[ \t]*"content"[\s\S]*?)\r?\n[ \t]*\x60{3}[ \t]*(?:\r?\n[\s\S]*)?$/i.exec(text);
+  if (fenced && !hasEarlierAction(fenced[1])) text = fenced[1] + '\n' + fenced[2];
   const boundary = /(?:^|\r?\n)[ \t]*(?=\{[ \t]*"(?:content|request_id)"\s*:)/.exec(text);
   if (!boundary) return;
   if (hasEarlierAction(text.slice(0, boundary.index))) return;
