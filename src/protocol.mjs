@@ -499,7 +499,7 @@ function parseLineFrame(text, inferIndent = false) {
 
 // Discard a following tool envelope only after a complete frame.
 function firstEditFrame(text) {
-  const boundary = /^(END(?:[ \t]+\S+)?)[ \t]*\r?\n(?:[ \t]*\r?\n)*(?=EDIT[ \t]|FILE[ \t]|(?:\{[ \t]*"|\[[ \t]*\{))/m.exec(text);
+  const boundary = /^(END(?:[ \t]+\S+)?)[ \t]*\r?\n(?:[ \t]*\r?\n)*(?=EDIT[ \t]|FILE[ \t]|(?:\{\s*"|\[\s*\{))/m.exec(text);
   return boundary ? text.slice(0, boundary.index + boundary[1].length) : text;
 }
 
@@ -512,7 +512,7 @@ function firstExplainedEdit(text) {
   const footer = /\r?\n(END(?:[ \t]+[0-9a-f]{24})?)[ \t]*(\r?\n|$)/.exec(candidate);
   if (!footer || /^EDIT[^\r\n]*\r?\n[ \t]*\x60{3}/.test(candidate)) return;
   const tail = candidate.slice(footer.index + footer[0].length);
-  if (tail && !/^(?:[ \t]*\r?\n)?(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{[ \t]*"content"\s*:|\[[ \t]*\{[ \t]*"type"[ \t]*:[ \t]*"tool_use")/.test(tail)) return;
+  if (tail && !/^(?:[ \t]*\r?\n)?(?:[ \t]*[^\r\n]+:\r?\n)?(?=EDIT[ \t]|\{\s*"content"\s*:|\[\s*\{\s*"type"\s*:\s*"tool_use")/.test(tail)) return;
   return parseLineFrame(candidate.slice(0, footer.index + footer[0].length - footer[2].length).trimEnd());
 }
 
@@ -1224,8 +1224,12 @@ function parseFirstReadOnlyCall(text) {
     reply = parseReadOnlyEnvelope(candidate.slice(0, paragraph.index));
     if (Array.isArray(reply)) reply = {content: reply};
   }
+  // Several actions after prose may be a speculative plan, so only read-only
+  // calls pass. A single call is the reply's one action; Claude Code still
+  // applies its permission rules to it.
   if (Array.isArray(reply?.content) && reply.content.length &&
-      reply.content.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name))) {
+      (reply.content.length === 1 ? reply.content[0]?.type === 'tool_use'
+        : reply.content.every(block => block?.type === 'tool_use' && READ_ONLY_TOOLS.has(block.name)))) {
     return reply;
   }
 }

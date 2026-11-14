@@ -1184,7 +1184,12 @@ test('prose followed by a bare tool array, and an explained edit with a trailing
   const grep = 'Let us search the router first.\n\n[{"type":"tool_use","id":"toolu_1","name":"Grep","input":{"pattern":"req\\.url\\s*==","path":"lib"}}]';
   assert.equal(parseReply(grep, plain, {matchedTurn: true}).content[0].input.pattern, 'req\\.url\\s*==');
   const bash = 'Run it.\n\n[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]';
-  assert.throws(() => parseReply(bash, plain, {matchedTurn: true}), /protocol JSON/);
+  assert.equal(parseReply(bash, plain, {matchedTurn: true}).content[0].name, 'Bash');
+  const two = 'Run both.\n\n[{"type":"tool_use","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","name":"Bash","input":{"command":"pwd"}}]';
+  assert.throws(() => parseReply(two, plain, {matchedTurn: true}), /protocol JSON/);
+  const pretty = 'EDIT ' + lineEditRequest().editableReads[0].read_id + ' 8 8\n  return "new";\nEND\n[\n{\n"type": "tool_use",\n"name": "Bash",\n"input": {"command": "node --test"}\n}\n]';
+  const prettyReq = lineEditRequest();
+  assert.equal(parseReply(pretty.replace(/EDIT \S+/, 'EDIT ' + prettyReq.editableReads[0].read_id), prettyReq, {matchedTurn: true}).content.length, 1);
   const request = lineEditRequest();
   const handle = request.editableReads[0].read_id;
   const edit = 'There is an extra bracket.\n\nEDIT ' + handle + ' 8 8\n  return "new";\nEND\nEND\n[{"type":"tool_use","name":"Bash","input":{"command":"node --test"}}]';

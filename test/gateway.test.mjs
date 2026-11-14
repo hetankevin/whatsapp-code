@@ -49,8 +49,9 @@ test('matched replies can carry a read-only call after an explanation', () => {
    assert.equal(later,undefined);
  }
  assert.throws(()=>parseReply(prefix+reply(r,[call]).replace(r.requestId,'old')+plan,r,{matchedTurn:true}), /does not match/);
- assert.throws(()=>parseReply(prefix+JSON.stringify({content:[{...call,name:'Bash'}]})+'\n\n'+text,
-   r,{matchedTurn:true}), /complete protocol/);
+ // A single call after prose is the reply's one action; later actions are dropped.
+ const single = parseReply(prefix+JSON.stringify({content:[{...call,name:'Bash'}]})+'\n\n'+text, r,{matchedTurn:true}).content;
+ assert.deepEqual(single.map(b=>b.name), ['Bash']);
  assert.throws(()=>parseReply('EDIT invalid frame\n'+text+plan,r,{matchedTurn:true}), /complete protocol/);
  const direct = JSON.stringify([{...call,id:'toolu_supplied_by_bot'}]);
  const [read] = parseReply(direct,r,{matchedTurn:true}).content;
