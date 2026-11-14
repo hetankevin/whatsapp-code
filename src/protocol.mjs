@@ -121,21 +121,41 @@ function resolveLineEdit(input, request) {
       replacement.split('\n').some(line => indentationPrefix.test(line))) {
     throw repairableError('Put INDENT on the EDIT header. Prefix every source line with its space count and |. Omit Markdown fences.');
   }
-  const snapshot = request.snapshots.get(request.readHandles.get(read_id) ?? read_id);
+  let snapshot = request.snapshots.get(request.readHandles.get(read_id) ?? read_id);
   if (!snapshot) {
     const guidance = request.editFiles
       ? 'Send the replacement code block for the current displayed excerpt.'
       : 'Use a read_id from editable_reads or call Read again.';
     throw repairableError('EditLines needs a current Read snapshot. ' + guidance);
   }
+  const contains = excerpt => start_line >= excerpt.first && end_line >= start_line &&
+    end_line < excerpt.first + excerpt.lines.length;
+  if (request.useVerificationContext && !contains(snapshot)) {
+    const alternatives = [...request.snapshots.values()].filter(excerpt =>
+      excerpt.filePath === snapshot.filePath && contains(excerpt));
+    if (alternatives.length === 1) snapshot = alternatives[0];
+  }
   const {first, lines, filePath} = snapshot;
-  if (start_line < first || end_line < start_line || end_line >= first + lines.length) {
+  if (!contains(snapshot)) {
     throw repairableError('EditLines range lies outside the numbered Read result for ' + filePath + ' (' + first + '–' + (first + lines.length - 1) + '). Use the file and range from the same excerpt.');
+  }
+  const start = start_line - first;
+  const end = end_line - first + 1;
+  let replacementLines = replacement === '' ? [] : replacement.split('\n');
+  // If the reply repeats both immediate neighbors, those lines identify
+  // the surrounding context. Compare without indentation, since WhatsApp
+  // can remove it. The original neighbor lines remain untouched.
+  const before = lines[start - 1]?.trimStart();
+  const after = lines[end]?.trimStart();
+  if (replacementLines.length === end - start + 2 && before?.length > 3 && after?.length > 3 && before !== after &&
+      replacementLines[0] === before && replacementLines.at(-1) === after &&
+      before !== lines[start - 1] && after !== lines[end]) {
+    replacementLines = replacementLines.slice(1, -1);
   }
   // Use the whole observed excerpt as the exact match. The real Edit tool
   // checks for file changes and ambiguity before modifying anything.
   const updated = [...lines];
-  updated.splice(start_line - first, end_line - start_line + 1, ...(replacement === '' ? [] : replacement.split('\n')));
+  updated.splice(start, end - start, ...replacementLines);
   const old_string = lines.join('\n');
   const new_string = updated.join('\n');
   if (new_string === old_string) throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
@@ -259,8 +279,7 @@ function parseBoundEdit(text, request) {
     if (!selector || index < 0 || index >= request.snapshots.size) throw new SyntaxError('Select one listed file number.');
     text = text.slice(selector[0].length);
   }
-  const excerpts = [...request.snapshots];
-  const [readId, snapshot] = excerpts[index];
+  const [readId, snapshot] = [...request.snapshots][index];
   if (request.useVerificationContext && /^BEFORE\r?\n/.test(text)) {
     const proposal = /^BEFORE\r?\n(\x60{3})[\w+-]*[ \t]*\r?\n([\s\S]+?)\r?\n\1\r?\n\s*AFTER\r?\n\1[\w+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1(?:\r?\n|$)/.exec(text);
     if (!proposal) throw new SyntaxError('Expected a BEFORE and AFTER code block.');
@@ -282,18 +301,8 @@ function parseBoundEdit(text, request) {
   const frame = firstEditFrame(text);
   const match = /^REPLACE[ \t]+(\d+[ \t]+\d+(?:[ \t]+INDENT)?)[ \t]*\r?\n([\s\S]*?)\r?\nEND$/.exec(frame);
   if (match) {
-    const reply = parseLineFrame('EDIT ' + request.requestId + ' ' + readId + ' ' + match[1] +
+    return parseLineFrame('EDIT ' + request.requestId + ' ' + readId + ' ' + match[1] +
       '\n' + match[2] + '\nEND ' + request.requestId, frame !== text);
-    if (request.useVerificationContext) {
-      const {input} = reply.content[0];
-      const contains = source => input.start_line >= source.first &&
-        input.end_line < source.first + source.lines.length;
-      if (!contains(snapshot)) {
-        const alternatives = excerpts.filter(([, source]) => source.filePath === snapshot.filePath && contains(source));
-        if (alternatives.length === 1) input.read_id = alternatives[0][0];
-      }
-    }
-    return reply;
   }
   if (request.useVerificationContext) throw repairableError('Use FILE and REPLACE to identify the exact lines to change.');
   const fenced = /^(\x60{3,})[a-zA-Z0-9_+-]*[ \t]*\r?\n([\s\S]*?)\r?\n\1$/.exec(text);
@@ -753,6 +762,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const rangeGuide = rangeEnabled ? [
     'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
     'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, leave the body empty.',
+    'If the replacement includes an entire multiline statement, select all its original lines. To move a statement within one excerpt, select a range that covers both locations and include the moved statement once.',
     'EDIT READ_ID START END_LINE',
     '  replacement code',
     'END',

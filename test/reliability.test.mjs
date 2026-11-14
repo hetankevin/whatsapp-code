@@ -336,6 +336,24 @@ test('EditLines uses exact source and preserves lines outside the range', () => 
   });
 });
 
+test('a line edit does not duplicate both unchanged boundary lines', () => {
+  const request = lineEditRequest([], {
+    type:'tool_result',tool_use_id:'read-x',
+    content:'7\t    const threshold = enabled\n8\t        ? value\n9\t        : fallback;'
+  });
+  const frame = 'EDIT ' + request.editableReads[0].read_id + ' 8 8\n';
+  const edit = source => parseReply(frame + source + '\nEND', request, {matchedTurn:true}).content[0].input;
+  const first = 'const threshold = enabled';
+  const last = ': fallback;';
+  const patch = edit(first + '\n        ? value + 1\n' + last);
+  assert.equal(patch.old_string, '    ' + first + '\n        ? value\n        ' + last);
+  assert.equal(patch.new_string, '    ' + first + '\n        ? value + 1\n        ' + last);
+  const oneBoundary = edit('        ? value + 1\n        ' + last);
+  assert.equal(oneBoundary.new_string, patch.new_string + '\n        ' + last);
+  const explicitlyIndented = edit('    ' + first + '\n        ? value + 1\n        ' + last);
+  assert.equal(explicitlyIndented.new_string, '    ' + first + '\n' + patch.new_string + '\n        ' + last);
+});
+
 test('large translated edits keep the changed lines and linked result in the WhatsApp transcript', () => {
   const unchanged = 'const value = "' + 'a'.repeat(20000) + '";';
   const request = lineEditRequest([], {
@@ -625,6 +643,10 @@ test('a configured test verifies discovered edits without fixed files', async ()
   assert.equal(parseReply(wrongExcerpt,request,{matchedTurn:true}).content[0].input.new_string, 'function other() {}');
   assert.throws(() => parseReply(wrongExcerpt.replace('FILE 2','FILE 1'),request,{matchedTurn:true}), /outside/);
   assert.throws(() => parseReply(wrongExcerpt.replace('30 30','1 30'),request,{matchedTurn:true}), /outside/);
+  const fromHandle = read => 'EDIT ' + read.read_id + ' 30 30\nfunction other() {}\nEND';
+  assert.equal(parseReply(fromHandle(request.editableReads[1]),request,{matchedTurn:true})
+    .content[0].input.new_string, 'function other() {}');
+  assert.throws(() => parseReply(fromHandle(request.editableReads[0]),request,{matchedTurn:true}), /outside/);
   const fence = '\x60'.repeat(3);
   const anchored = ['FILE 2', 'BEFORE', fence, 'function handle() {}', fence, 'AFTER',
     fence, 'function handle() { return 1; }', fence].join('\n');
