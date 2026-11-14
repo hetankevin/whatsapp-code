@@ -1,5 +1,9 @@
 # whatsapp-code
 
+Nobody asked for this. But weirdly enough, Meta AI on WhatsApp is completely free, and doesn't seem to rate-limit you or impose any usage limits on you at all. Since they claim that this is a fRoNtIEr Ai m0dEl cAlLED mUSe sPaRK, I suppose no one loses anything by trying to hook it up to a coding harness. 
+
+## Description
+
 An experimental adapter that uses WhatsApp's consumer Meta AI as the model behind Claude Code.
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, returns Meta AI's text answers or validates its structured tool calls. Claude Code executes tools under its own permission rules.
