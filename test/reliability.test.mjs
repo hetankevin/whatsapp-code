@@ -1158,3 +1158,22 @@ test('tool output in the WhatsApp view drops terminal styling and dependency fra
   assert.match(request.prompt, /got 'Created'/);
   assert.match(request.prompt, /lib\/response\.js:120:5/);
 });
+
+test('changed_lines and unindented search-replace edits become exact native edits', () => {
+  const request = lineEditRequest();
+  const shown = JSON.stringify({content: [{type: 'tool_use', name: 'Edit', input: {file_path: 'module.js'},
+    changed_lines: {before: 'return "old";', after: 'return "new";'}}]});
+  const [edit] = parseReply(shown, request, {matchedTurn: true}).content;
+  // A single line is an exact substring already; native Edit keeps its indentation.
+  assert.deepEqual(edit.input, {file_path: 'module.js', old_string: 'return "old";', new_string: 'return "new";'});
+  const multi = JSON.stringify({content: [{type: 'tool_use', name: 'Edit', input: {file_path: 'module.js'},
+    changed_lines: {before: 'const a = 1;\nreturn "old";', after: 'const a = 2;\nreturn "new";'}}]});
+  assert.deepEqual(parseReply(multi, request, {matchedTurn: true}).content[0].input,
+    {file_path: 'module.js', old_string: 'const a = 1;\n  return "old";', new_string: 'const a = 2;\n  return "new";'});
+  const exact = JSON.stringify({content: [{type: 'tool_use', name: 'Edit', input: {file_path: 'module.js', old_string: '  return "old";', new_string: '  return 1;'}}]});
+  assert.deepEqual(parseReply(exact, request, {matchedTurn: true}).content[0].input,
+    {file_path: 'module.js', old_string: '  return "old";', new_string: '  return 1;'});
+  // No current excerpt match: passed through for Claude Code's exact check.
+  const unknown = JSON.stringify({content: [{type: 'tool_use', name: 'Edit', input: {file_path: 'module.js', old_string: 'missing();', new_string: 'x();'}}]});
+  assert.equal(parseReply(unknown, request, {matchedTurn: true}).content[0].input.old_string, 'missing();');
+});

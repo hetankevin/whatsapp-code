@@ -240,7 +240,9 @@ function reindent(replacement, selected, excerpt, filePath) {
   const firstIndent = indentOf(selected.find(line => line.trim()) ?? '');
   let cursor = 0;
   let previous = null;
-  return replacement.map(line => {
+  // Same line count: a changed line most likely keeps its position.
+  const aligned = replacement.length === selected.length;
+  return replacement.map((line, position) => {
     if (!line.trim()) return line;
     const text = line.trim();
     // Bare closers carry no position, so they follow brace depth instead.
@@ -250,6 +252,8 @@ function reindent(replacement, selected, excerpt, filePath) {
     if (match >= 0) {
       cursor = match + 1;
       indent = indentOf(selected[match]);
+    } else if (aligned && selected[position].trim()) {
+      indent = indentOf(selected[position]);
     } else if (previous === null) {
       indent = firstIndent;
       if (closes(text) && !closes(selected.find(l => l.trim()) ?? '')) indent = indent.slice(0, Math.max(0, indent.length - unit.length));
@@ -1338,6 +1342,17 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       Array.isArray(obj) && obj.length > 0 && obj.every(block => block?.type === 'tool_use')) {
     obj = {content: obj};
   }
+  // Meta AI sometimes requests an edit in the transcript's own display form,
+  // changed_lines {before, after}. That is a search and replace: map it to
+  // native Edit old_string and new_string.
+  if (Array.isArray(obj?.content)) {
+    obj.content = obj.content.map(block => {
+      const shown = block?.changed_lines ?? block?.input?.changed_lines;
+      if (block?.type !== 'tool_use' || block.name !== 'Edit' || !shown || typeof shown.before !== 'string' ||
+          typeof shown.after !== 'string' || typeof block.input?.file_path !== 'string') return block;
+      return {type: 'tool_use', name: 'Edit', input: {file_path: block.input.file_path, old_string: shown.before, new_string: shown.after}};
+    });
+  }
   // A line edit sometimes arrives as JSON named Edit with a read_id and line
   // range instead of an EDIT frame. Normalize it to the same line-edit path.
   if (request.validateLineEdit && Array.isArray(obj?.content)) {
@@ -1425,6 +1440,29 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
         shaped.limit = 400;
       }
       if (validate(shaped)) input = shaped;
+    }
+    // A search and replace whose old text lost its indentation: if it matches
+    // exactly one place in a current excerpt line by line, use that exact text.
+    if (name === 'Edit' && !lineEdit && request.validateLineEdit && typeof input?.old_string === 'string' &&
+        typeof input.new_string === 'string' && typeof input.file_path === 'string') {
+      const wanted = input.old_string.replace(/\n+$/, '').split('\n');
+      const key = line => line.trim();
+      const found = [];
+      for (const snapshot of request.snapshots.values()) {
+        if (!sameFile(snapshot.filePath, input.file_path)) continue;
+        if (snapshot.lines.join('\n').includes(input.old_string)) { found.length = 0; break; }
+        for (let i = 0; i + wanted.length <= snapshot.lines.length; i++) {
+          if (wanted.every((line, j) => key(line) === key(snapshot.lines[i + j])) && wanted.some(line => key(line))) {
+            found.push({snapshot, i});
+          }
+        }
+      }
+      if (found.length === 1) {
+        const {snapshot, i} = found[0];
+        const original = snapshot.lines.slice(i, i + wanted.length);
+        const replacement = reindent(input.new_string.replace(/\n+$/, '').split('\n'), original, snapshot.lines, snapshot.filePath);
+        input = {...input, file_path: snapshot.filePath, old_string: original.join('\n'), new_string: replacement.join('\n')};
+      }
     }
     const repeatedTest = testCommand({name, input});
     if (request.testFailures?.has(repeatedTest) && !finalAttempt) {
