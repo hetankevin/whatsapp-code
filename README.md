@@ -21,7 +21,7 @@ The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unoffic
 
 ## Setup
 
-Install from source with Node 22+, Go 1.26+, a C compiler (for SQLite), Claude Code on PATH, and WhatsApp with Meta AI available. The build creates `bin/whatsapp-transport`. The launcher uses the local gateway token, so inference requires only the linked WhatsApp account. Tested locally with Claude Code 2.1.321 on macOS arm64.
+Install from source with Node 22+, Go 1.26+, a C compiler (for SQLite), Claude Code on PATH, and WhatsApp with Meta AI available. The build creates `bin/whatsapp-transport`. The launcher uses the local gateway token, so inference requires only the linked WhatsApp account. Tested locally with Claude Code 2.1.322, Node 22.23.2, and Go 1.26.11 on macOS arm64. Go is not preinstalled on macOS; install it or set GO_BINARY to a downloaded toolchain. A fresh clone, `npm ci`, build, `go vet`, and the unit tests took about 40 seconds.
 
     git clone https://github.com/hetankevin/whatsapp-code.git
     cd whatsapp-code
@@ -44,7 +44,9 @@ To start an attachable Claude Code session in a trusted project, pass an initial
     node /path/to/whatsapp-code/src/launch.mjs --bg -- 'Run the test suite.'
     claude attach <session-id>
 
-Use the session ID printed by the launcher. Claude Code manages the background session and terminal interface.
+Use the session ID printed by the launcher. Claude Code manages the background session and terminal interface. Claude Code only lets background sessions edit inside a git worktree, so in a git checkout the launcher adds `--worktree` and links an existing root `node_modules` into it through Claude Code's `worktree.symlinkDirectories` setting. Changes land under `.claude/worktrees/<name>`; review and merge them from there. Set WA_BG_WORKTREE=0 to disable this.
+
+In scripts, `-p` waits about three seconds for piped stdin; pass `< /dev/null` when there is none. Claude Code prints an `unrecognized_model` notice for `meta-ai-whatsapp`; it is harmless.
 
 The launcher uses a compact coding prompt, disables Claude Code session recaps for that launch, and requests the Read, Write, Edit, Glob, Grep, and Bash tools. Claude Code selects which tools appear in the request. The default launcher uses Claude Code's safe mode to expose native tools while disabling ordinary hooks, plugins, and MCP servers. The fixed-file verification modes use bare mode. The launcher supplies the actual working directory, a root file listing, and root AGENTS.md/CLAUDE.md contents to Meta AI; it does not read unrelated file contents. Global Claude Code settings are not changed. Interactive tool permissions remain with Claude Code; the adapter never executes commands itself.
 
@@ -64,6 +66,10 @@ The device database, gateway token, and pairing page stay in local application s
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.
 - For coding requests with Read and Edit, Meta AI sends literal source in a standalone EDIT frame with a short handle from the current Read snapshot and an inclusive line range. The matching WhatsApp turn supplies the request identity. Explicit INDENT frames remain supported. The gateway builds the exact match from the Read result and sends a regular Edit to Claude Code. In later WhatsApp prompts, that edit is shown as changed lines with the linked tool result. A fresh Read is required after a file mutation or shell command. The gateway matches the WhatsApp reply to its outbound turn and validates tool arguments before returning them to Claude Code. An explicit request ID must match.
+- Meta AI's tool replies are often malformed. The gateway recovers specific observed shapes on the matched WhatsApp turn (missing closing brackets, repeated END lines, a code block glued inside an edit frame, bare tool arrays, JSON line edits) and still validates every call against the native tool schema and current Read snapshot.
+- In the default coding mode, a line edit's changed lines become a fresh numbered excerpt with a new read_id, so the next edit needs no extra Read. Shell commands keep earlier excerpts; native Edit still checks the exact text. An edit of lines outside the current excerpt becomes a native Read of those lines first. Targeted Reads shorter than 40 lines are widened to 40 and Reads are capped at 400 lines, to keep the WhatsApp prompt under its limit and avoid compaction thrash.
+- Flush-left replacement lines get their indentation back in brace languages (unchanged lines keep their original indentation; new lines follow brace depth). Indentation-sensitive files and anything with template literals are left as sent. A line edit that changes bracket balance gets one repair request first.
+- If a turn ends in text after a failed command or after an untested edit, the model gets one reminder; a second text reply is accepted as final.
 - Replies are buffered, then emitted as Anthropic SSE events. This is not native token streaming.
 - Token counts are character-based estimates, not tokenizer or billing data.
 - No model-version pinning, sampling controls, or enforceable output-token limit.
@@ -83,6 +89,9 @@ The device database, gateway token, and pairing page stay in local application s
 | WA_EDIT_FILES | unset | JSON array of up to eight existing file paths for automatic verification. Set on the launcher. |
 | WA_TEST_COMMAND | node --test in fixed-file mode | Run the exact command after each successful edit. Fixed-file mode also runs it before editing. In discovery mode, a successful search or read triggers a baseline test if the model has yet to run it. Claude Code applies its Bash permissions. |
 | WA_EDIT_RANGES | unset | JSON array in edit target order. Use a one-based [offset, limit] pair to read a fixed excerpt or null to read the whole file. |
+| WA_BG_WORKTREE | on | Set to 0 on the launcher to keep `--bg` sessions out of a native worktree |
+| WA_BOT_MODE | unset | Set to think_hard on the server to request Meta AI's think-hard mode (experimental; see the evaluation notes) |
+| WA_REPLY_LOG | unset | Absolute path on the server for a private, owner-only log of Meta AI replies and reply metadata. Contains source and prompts; keep it local. |
 | GO_BINARY | go | Compiler for npm run build |
 
 Supported explicit bot addresses are defined by whatsmeow: 1807055946647697@bot (Muse), 867051314767696@bot (Meta AI), and 13135550002@s.whatsapp.net (legacy). An override does not establish account eligibility.
