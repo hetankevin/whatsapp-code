@@ -561,8 +561,11 @@ test('a matched reply with later actions applies only the first encoded edit', (
     assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
     assert.equal(later, undefined);
   }
-  assert.throws(() => parseReply(first + '\n\nNext, apply this other edit:\n' + second,
-    request, {matchedTurn:true}), /one EDIT frame ending at its first standalone END/);
+  // Commentary and a later frame after the first END are dropped; one edit runs.
+  const announced = parseReply(first + '\n\nNext, apply this other edit:\n' + second, request, {matchedTurn:true}).content;
+  assert.deepEqual([announced.length, announced[0].input.new_string], [1, 'const a = 1;\n  return "new";\n}']);
+  const commentary = parseReply(first + '\nEND\n\nLet us run the tests:\n\x60\x60\x60\nbash\nnpm test\n\x60\x60\x60', request, {matchedTurn:true}).content;
+  assert.deepEqual(commentary.map(b => b.name), ['Edit']);
   const fence = '\x60'.repeat(3);
   const literal = 'EDIT ' + handle + ' 8 8\n' + fence + '\nEND\n' + fence + '\nEND';
   assert.equal(parseReply(literal, request, {matchedTurn:true}).content[0].input.new_string, 'const a = 1;\n  END\n}');
@@ -1207,4 +1210,13 @@ test('after compaction a stale final edit rereads a file named in prose', () => 
   assert.deepEqual([read.name, read.input.file_path], ['Read', 'lib/application.js']);
   const bare = 'EDIT READ_ID 276 293\nself._router.param(name, fn);\nEND';
   assert.equal(parseReply(bare, request, {matchedTurn: true, finalAttempt: true}).content[0].input.file_path, 'lib/application.js');
+});
+
+test('text-only replies in array or after prose are final answers', () => {
+  const tools = ['Read', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const request = prepare({tools, messages: [{role: 'user', content: 'Summarize.'}]});
+  const array = parseReply('[{"type":"text","text":"Fix applied."}]\nEND', request, {matchedTurn: true});
+  assert.deepEqual(array.content, [{type: 'text', text: 'Fix applied.'}]);
+  const prose = parseReply('Done.\n{"content":[{"type":"text","text":"Done."}]}', request, {matchedTurn: true});
+  assert.equal(prose.content[0].text, 'Done.');
 });

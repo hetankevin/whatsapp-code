@@ -502,7 +502,16 @@ function parseLineFrame(text, inferIndent = false) {
 // Discard a following tool envelope only after a complete frame.
 function firstEditFrame(text) {
   const boundary = /^(END(?:[ \t]+\S+)?)[ \t]*\r?\n(?:[ \t]*\r?\n)*(?=EDIT[ \t]|FILE[ \t]|(?:\{\s*"|\[\s*\{))/m.exec(text);
-  return boundary ? text.slice(0, boundary.index + boundary[1].length) : text;
+  if (boundary) return text.slice(0, boundary.index + boundary[1].length);
+  // Commentary after a complete frame (for example "Let's run the tests" and
+  // a shell block) is not an action. Stop at the first END outside a fence.
+  for (const match of text.matchAll(/^END(?:[ \t]+\S+)?[ \t]*$/gm)) {
+    const before = text.slice(0, match.index);
+    if ((before.match(/^[ \t]*\x60{3}/gm) ?? []).length % 2 === 0 && match.index + match[0].length < text.length) {
+      return text.slice(0, match.index + match[0].trimEnd().length);
+    }
+  }
+  return text;
 }
 
 function firstExplainedEdit(text) {
@@ -1230,6 +1239,9 @@ function parseFirstReadOnlyCall(text) {
     reply = parseReadOnlyEnvelope(candidate.slice(0, paragraph.index));
     if (Array.isArray(reply)) reply = {content: reply};
   }
+  // Prose followed by a text-only envelope is a final answer.
+  if (Array.isArray(reply?.content) && reply.content.length &&
+      reply.content.every(block => block?.type === 'text' && typeof block.text === 'string')) return reply;
   // Several actions after prose may be a speculative plan, so only read-only
   // calls pass. A single call is the reply's one action; Claude Code still
   // applies its permission rules to it.
@@ -1286,7 +1298,9 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   const original = raw.trim();
   const fence = /^(\x60{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i.exec(original);
   // A repeated END after a complete frame carries no source. Keep the first.
-  const unwrapped = fence ? fence[2].trim() : original;
+  let unwrapped = fence ? fence[2].trim() : original;
+  // A stray END line after a JSON reply carries nothing.
+  if (!/^[ \t]*(?:EDIT|REPLACE)[ \t]/m.test(unwrapped)) unwrapped = unwrapped.replace(/\r?\n[ \t]*END[ \t]*$/, '').trim();
   const trimmed = /^[ \t]*(?:EDIT|REPLACE)[ \t]+\S+[ \t]+\d+/m.test(unwrapped)
     ? unwrapped.replace(/^END(?:[ \t]+END)+[ \t]*$/gm, 'END')
       .replace(/^(END(?:[ \t]+\S+)?)[ \t]*(?:\r?\n[ \t]*END[ \t]*)+$/gm, '$1')
@@ -1346,6 +1360,10 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   const explicitId = obj && Object.hasOwn(obj, 'request_id');
   if (explicitId ? obj.request_id !== request.requestId : !matchedTurn) {
     throw staleRequestError('Meta AI reply does not match this request.');
+  }
+  // A bare array of text blocks is a final answer in content-block form.
+  if (matchedTurn && Array.isArray(obj) && obj.length > 0 && obj.every(block => block?.type === 'text' && typeof block.text === 'string')) {
+    obj = {content: obj};
   }
   // The whole envelope sometimes arrives wrapped in a one-element array.
   if (matchedTurn && Array.isArray(obj) && obj.length === 1 && obj[0] && typeof obj[0] === 'object' &&
