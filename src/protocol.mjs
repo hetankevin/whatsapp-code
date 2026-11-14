@@ -290,6 +290,8 @@ function bracketBalance(text) {
   return net;
 }
 
+const sourcePath = /(?:^|[\s\x60'"(])((?:\/?[\w.@-]+\/)*[\w.@-]+\.(?:[cm]?[jt]sx?|py|go|rs|java|rb|c|cc|cpp|h|hpp|cs|php|json))(?=$|[\s\x60'"),:;])/gm;
+
 function resolveLineEdit(input, request, finalAttempt = false) {
   if (!request.validateLineEdit?.(input)) throw repairableError('EditLines needs a read_id, two line numbers, and replacement source.');
   const {read_id, start_line, end_line} = input;
@@ -1173,7 +1175,11 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       .filter(block => block.type === 'tool_use' && ['Read', 'Edit', 'Write'].includes(block.name) &&
         typeof block.input?.file_path === 'string')
       .map(block => block.input.file_path) : []).reverse())].reverse();
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles,
+  const mentionedFiles = taskMessages.flatMap(message => (typeof message.content === 'string' ? [message.content]
+    : Array.isArray(message.content) ? message.content.filter(block => block.type === 'text').map(block => block.text) : [])
+    .flatMap(text => [...text.matchAll(sourcePath)].map(match => match[1])))
+    .filter(file => !file.includes('node_modules/'));
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles,
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -1411,7 +1417,12 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       // If the repaired reply still has no current excerpt, read the requested
       // lines of the most recently used file instead of failing the turn. The model then edits
       // with the fresh handle. Reads cannot change the workspace.
-      const file = request.recentFiles?.at(-1);
+      // After compaction the transcript may name files only in prose: prefer
+      // a path in this reply, then a recently used file, then one mentioned in
+      // the task's text (for example the compaction summary).
+      const mentioned = text => [...String(text ?? '').matchAll(sourcePath)].map(match => match[1])
+        .filter(file => !file.includes('node_modules/'));
+      const file = mentioned(original).at(-1) ?? request.recentFiles?.at(-1) ?? request.mentionedFiles?.at(-1);
       const {start_line, end_line} = error.missingSnapshot ?? {};
       if (!error.missingSnapshot || !matchedTurn || !finalAttempt || request.choice.type !== 'auto' || request.editFiles || !file ||
           !Number.isSafeInteger(start_line) || !Number.isSafeInteger(end_line)) throw error;

@@ -1197,3 +1197,14 @@ test('prose followed by a bare tool array, and an explained edit with a trailing
   assert.equal(content.length, 1);
   assert.equal(content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
 });
+
+test('after compaction a stale final edit rereads a file named in prose', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const summary = 'This session is being continued from a previous conversation. Summary: the bug is in lib/application.js near app.param.';
+  const request = prepare({tools, messages: [{role: 'user', content: summary}]});
+  const stale = 'The issue is in lib/application.js.\nEDIT READ_ID 276 293\nself._router.param(name, fn);\nEND';
+  const [read] = parseReply(stale, request, {matchedTurn: true, finalAttempt: true}).content;
+  assert.deepEqual([read.name, read.input.file_path], ['Read', 'lib/application.js']);
+  const bare = 'EDIT READ_ID 276 293\nself._router.param(name, fn);\nEND';
+  assert.equal(parseReply(bare, request, {matchedTurn: true, finalAttempt: true}).content[0].input.file_path, 'lib/application.js');
+});
