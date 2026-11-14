@@ -15,7 +15,7 @@ An experimental adapter that uses WhatsApp's consumer Meta AI as the model behin
 
 Claude Code sends Anthropic Messages requests to a local gateway. The gateway sends the request through WhatsApp, returns Meta AI's text answers or validates its structured tool calls. Claude Code executes tools under its own permission rules.
 
-**Status:** verified a live WhatsApp → Meta AI → Claude Code tool round trip on November 9, 2026. Meta AI requested a file read, Claude Code executed it, and Meta AI returned the random verification code from the file. Twenty-six local tests and four Claude Code smoke tests also pass. This is a small integration check, not evidence of reliable long coding sessions.
+**Status:** works end to end with native Claude Code (headless, background worktrees, the interactive terminal, native compaction and resume), but not yet usable for ordinary coding. In the November 2026 live evaluation ([docs/EVALUATION.md](docs/EVALUATION.md)), Meta AI answered most plain questions correctly and fixed a small self-contained bug end to end in 7 of 8 attempts, but repaired only one of dozens of real repository bugs and none of 14 sealed held-out ones. 75 unit tests and five Claude Code smoke paths pass.
 
 The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unofficial linked-device API**, not the WhatsApp Business API. Unofficial clients can stop working or lead to account restrictions. Check WhatsApp's current terms before using it. This project is not affiliated with Meta, WhatsApp, or Anthropic.
 
