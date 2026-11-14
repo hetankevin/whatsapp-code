@@ -376,7 +376,9 @@ function resolveLineEdit(input, request, finalAttempt = false) {
   updated.splice(start, end - start, ...replacementLines);
   const old_string = lines.join('\n');
   const new_string = updated.join('\n');
-  if (new_string === old_string) throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
+  // On the last attempt, let Claude Code's native Edit report the no-op as a
+  // tool error the model can see, instead of ending the session here.
+  if (new_string === old_string && !finalAttempt) throw repairableError('The proposed replacement leaves the source unchanged. Choose a different edit.');
   return {file_path: filePath, old_string, new_string};
 }
 

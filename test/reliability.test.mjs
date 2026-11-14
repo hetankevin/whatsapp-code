@@ -418,6 +418,7 @@ test('range edits reject unobserved lines, stale snapshots, and parallel calls',
   assert.throws(() => parseReply(reply(request,call({start_line:6})),request), /outside/);
   assert.throws(() => parseReply(reply(request,call({end_line:10})),request), /outside/);
   assert.throws(() => parseReply(reply(request,call({new_string:'  return "old";'})),request), /unchanged/);
+  assert.equal(parseReply(reply(request,call({new_string:'  return "old";'})),request,{finalAttempt:true}).content[0].name, 'Edit');
   assert.throws(() => parseReply(reply(request,call(),call()),request), /without other tools/);
   assert.equal(parseReply(reply(request,call()),request).content[0].input.new_string, 'const a = 1;\n}');
   const stale = lineEditRequest([{role:'assistant',content:[
