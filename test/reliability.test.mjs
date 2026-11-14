@@ -421,9 +421,27 @@ test('range edits reject unobserved lines, stale snapshots, and parallel calls',
   assert.throws(() => parseReply(reply(request,call(),call()),request), /without other tools/);
   assert.equal(parseReply(reply(request,call()),request).content[0].input.new_string, 'const a = 1;\n}');
   const stale = lineEditRequest([{role:'assistant',content:[
-    {type:'tool_use',name:'Bash',id:'cmd',input:{command:'node --test'}}
+    {type:'tool_use',name:'Task',id:'agent',input:{prompt:'Change files.'}}
   ]}]);
   assert.throws(() => parseReply(reply(stale,call()),stale), /current Read snapshot/);
+  // A test command keeps the snapshot. Native Edit still checks the excerpt.
+  const tested = lineEditRequest([
+    {role:'assistant',content:[{type:'tool_use',name:'Bash',id:'cmd',input:{command:'node --test'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'cmd',content:'not ok 1',is_error:true}]}
+  ]);
+  assert.equal(parseReply(reply(tested,call()),tested).content[0].input.old_string, 'const a = 1;\n  return "old";\n}');
+  const editedOther = lineEditRequest([
+    {role:'assistant',content:[{type:'tool_use',name:'Edit',id:'e1',input:{file_path:'other.js',old_string:'a',new_string:'b'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'e1',content:'updated'}]}
+  ]);
+  assert.equal(parseReply(reply(editedOther,call()),editedOther).content[0].input.file_path, 'module.js');
+  for (const name of ['Edit', 'Write']) {
+    const edited = lineEditRequest([
+      {role:'assistant',content:[{type:'tool_use',name,id:'e2',input:{file_path:'/project/module.js',content:'x',old_string:'a',new_string:'b'}}]},
+      {role:'user',content:[{type:'tool_result',tool_use_id:'e2',content:'updated'}]}
+    ]);
+    assert.throws(() => parseReply(reply(edited,call()),edited), /current Read snapshot/);
+  }
   const unnumbered = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:'unnumbered'});
   assert.throws(() => parseReply(reply(unnumbered,call()),unnumbered), /current Read snapshot/);
 });
@@ -867,4 +885,74 @@ test('snapshot context keeps one current read and the latest test outcome', () =
   ]));
   assert.equal(passed.latest_test_failure, undefined);
   assert.deepEqual(passed.last_tool_status, [{tool: 'Bash', command: 'node --test', status: 'succeeded'}]);
+});
+
+test('matched envelopes missing final closers still validate', () => {
+  const tools = ['Read', 'Grep', 'Bash', 'Edit'].map(name => ({name, input_schema: {type: 'object'}}));
+  const request = prepare({tools, messages: [{role: 'user', content: 'Fix the router.'}]});
+  const read = '{"content":[{"type":"tool_use","id":"toolu_x","name":"Read","input":{"file_path":"lib/a.js","offset":250,"limit":10}}]';
+  const [call] = parseReply(read, request, {matchedTurn: true}).content;
+  assert.equal(call.name, 'Read');
+  assert.deepEqual(call.input, {file_path: 'lib/a.js', offset: 250, limit: 10});
+  const explained = parseReply('Let us look at the response module.\n\n' + read, request, {matchedTurn: true});
+  assert.equal(explained.content[0].name, 'Read');
+  // Damage other than missing closers is still rejected.
+  assert.throws(() => parseReply('{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls}}]', request, {matchedTurn: true}), /protocol JSON/);
+  assert.throws(() => parseReply('{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}]', request, {matchedTurn: true}), /protocol JSON/);
+});
+
+test('a repeated END after a complete EDIT frame is ignored', () => {
+  const request = lineEditRequest();
+  const [read] = request.editableReads;
+  const [edit] = parseReply('EDIT ' + read.read_id + ' 8 8\n  return "new";\nEND\nEND', request, {matchedTurn: true}).content;
+  assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
+  const explained = parseReply('Adjust the return value.\n\nEDIT ' + read.read_id + ' 8 8\n  return "new";\nEND\nEND', request, {matchedTurn: true});
+  assert.equal(explained.content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
+});
+
+test('an unknown handle binds only to one containing excerpt that shares source', () => {
+  const request = lineEditRequest();
+  const [edit] = parseReply('EDIT rcb9163a477b4 7 8\nconst a = 1;\n  return "new";\nEND', request, {matchedTurn: true}).content;
+  assert.equal(edit.input.file_path, 'module.js');
+  assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
+  // No selected line survives, so the reply might target another file.
+  assert.throws(() => parseReply('EDIT rcb9163a477b4 8 8\n  return "new";\nEND', request, {matchedTurn: true}),
+    /current Read snapshot[\s\S]*Current: r[0-9a-f]{12} module\.js 7-9/);
+  assert.throws(() => parseReply('EDIT rcb9163a477b4 20 21\n}\nEND', request, {matchedTurn: true}), /current Read snapshot/);
+  const two = lineEditRequest([
+    {role:'assistant',content:[{type:'tool_use',name:'Read',id:'read-y',input:{file_path:'other.js'}}]},
+    {role:'user',content:[{type:'tool_result',tool_use_id:'read-y',content:'7\tconst b = 1;\n8\t  return "x";\n9\t}'}]}
+  ]);
+  assert.throws(() => parseReply('EDIT rcb9163a477b4 7 8\nconst a = 1;\n  return "new";\nEND', two, {matchedTurn: true}), /current Read snapshot/);
+});
+
+test('a text reply after a failed command or untested edit gets one reminder', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const step = (id, name, input, content, is_error = false) => [
+    {role: 'assistant', content: [{type: 'tool_use', id, name, input}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: id, content, is_error}]}
+  ];
+  const turn = (...steps) => prepare({tools, messages: [{role: 'user', content: 'Fix the bug and run npm test.'}, ...steps.flat()]});
+  const failed = turn(step('t1', 'Bash', {command: 'npm test'}, '1 failing', true));
+  assert.throws(() => parseReply('Let us dig into the config loader next.', failed, {matchedTurn: true}), /latest command failed/);
+  assert.equal(parseReply('Blocked: the loader is generated code.', failed, {matchedTurn: true, finalAttempt: true}).content[0].type, 'text');
+  assert.equal(parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"a.js"}}]}', failed, {matchedTurn: true}).content[0].name, 'Read');
+  const untested = turn(step('t1', 'Bash', {command: 'npm test'}, '1 failing', true),
+    step('e1', 'Edit', {file_path: 'a.js', old_string: 'a', new_string: 'b'}, 'updated'));
+  assert.throws(() => parseReply('Tests should pass now.', untested, {matchedTurn: true}), /nothing has run since/);
+  const verified = turn(step('t1', 'Bash', {command: 'npm test'}, '1 failing', true),
+    step('e1', 'Edit', {file_path: 'a.js', old_string: 'a', new_string: 'b'}, 'updated'),
+    step('t2', 'Bash', {command: 'npm test'}, '3 passing'));
+  assert.equal(parseReply('Fixed; npm test passes.', verified, {matchedTurn: true}).content[0].type, 'text');
+  const question = prepare({tools, messages: [{role: 'user', content: 'What does 3SUM mean?'}]});
+  assert.equal(parseReply('A classic problem.', question, {matchedTurn: true}).content[0].type, 'text');
+});
+
+test('a repeated END before a later tool envelope keeps only the first edit', () => {
+  const request = lineEditRequest();
+  const [read] = request.editableReads;
+  const reply = 'EDIT ' + read.read_id + ' 8 8\n  return "new";\nEND\nEND\n\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"node --test"}}]}';
+  const {content} = parseReply(reply, request, {matchedTurn: true});
+  assert.equal(content.length, 1);
+  assert.equal(content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
 });

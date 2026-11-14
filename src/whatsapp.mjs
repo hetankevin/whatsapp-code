@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
 import { writeFile, rm } from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
 import path from 'node:path';
 import QRCode from 'qrcode';
 import { extractText, GatewayError, parseReply } from './protocol.mjs';
@@ -77,9 +78,10 @@ export class WhatsApp {
         error.generationFailure = true;
         throw error;
       }
-      reply = parseReply(text, p.request, {matchedTurn: true});
+      reply = parseReply(text, p.request, {matchedTurn: true, finalAttempt: p.repairCount >= 1});
     }
     catch (err) { p.lastError = err; }
+    this.logReply(p, text, e.edit, reply, p.lastError);
     if (reply) {
       if (final) p.resolve(reply);
       else p.settle = setTimeout(() => p.resolve(reply), 2500);
@@ -88,6 +90,17 @@ export class WhatsApp {
     } else {
       p.settle = setTimeout(() => this.repairOrReject(p), 2500);
     }
+  }
+  // Opt-in private diagnostics for local debugging only. Replies can contain
+  // source and prompts, so the file is created with owner-only permissions.
+  logReply(p, text, edit, reply, error) {
+    const file = process.env.WA_REPLY_LOG;
+    if (!file || !path.isAbsolute(file)) return;
+    const record = {time: new Date().toISOString(), request: p.request.requestId, attempt: p.repairCount,
+      edit: edit ?? null, prompt_chars: p.prompt?.length, tools: [...(p.request.validators?.keys() ?? [])],
+      reads: p.request.editableReads, error: error?.message ?? null,
+      accepted: reply ? reply.content.map(b => b.type === 'tool_use' ? b.name : 'text') : null, text};
+    try { appendFileSync(file, JSON.stringify(record) + '\n', {mode: 0o600}); } catch {}
   }
   repairOrReject(p) {
     if (this.pending !== p) return;

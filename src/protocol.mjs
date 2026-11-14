@@ -34,17 +34,35 @@ function withoutReadLabels(text) {
   return read ? read.lines.join('\n') + (text.endsWith('\n') ? '\n' : '') : text;
 }
 
-function trackReads(messages, keepDisjoint = false) {
+// Paths can be relative or absolute. Over-matching only forces a reread.
+const sameFile = (a, b) => a === b || path.basename(a) === path.basename(b);
+
+function trackReads(messages, keepDisjoint = false, perFile = false) {
   const pending = new Map();
   const snapshots = new Map();
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
     if (message.role === 'assistant') {
       const calls = message.content.filter(block => block.type === 'tool_use');
-      if (calls.some(call => !READ_ONLY_TOOLS.has(call.name))) {
+      // In the default mode an edit or write invalidates reads of its file and
+      // shell commands keep snapshots: each line edit sends the whole observed excerpt as the
+      // native Edit old_string, so Claude Code rejects it if a command changed
+      // that source. Any other tool conservatively invalidates everything.
+      if (calls.some(call => !READ_ONLY_TOOLS.has(call.name) &&
+          (!perFile || !['Bash', 'Edit', 'Write'].includes(call.name)))) {
         pending.clear();
         snapshots.clear();
         continue;
+      }
+      for (const call of calls) {
+        if (!['Edit', 'Write'].includes(call.name)) continue;
+        const target = call.input?.file_path;
+        for (const [id, snapshot] of snapshots) {
+          if (typeof target !== 'string' || sameFile(snapshot.filePath, target)) snapshots.delete(id);
+        }
+        for (const [id, filePath] of pending) {
+          if (typeof target !== 'string' || sameFile(filePath, target)) pending.delete(id);
+        }
       }
       for (const call of calls) {
         if (call.name === 'Read' && typeof call.input?.file_path === 'string') {
@@ -71,6 +89,38 @@ function trackReads(messages, keepDisjoint = false) {
     }
   }
   return snapshots;
+}
+
+// Meta AI sometimes stops a complete tool envelope before its final closing
+// brackets. Add only missing closers after the last complete string; any
+// other damage still fails, and the usual schema checks still apply.
+function closeJSON(text) {
+  if (!/^[\[{]/.test(text)) return;
+  const stack = [];
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '\\') i++;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === '{' || char === '[') stack.push(char === '{' ? '}' : ']');
+    else if (char === '}' || char === ']') {
+      if (stack.pop() !== char) return;
+      if (!stack.length && text.slice(i + 1).trim()) return;
+    }
+  }
+  if (quoted || !stack.length || stack.length > 3) return;
+  return text.trimEnd() + stack.reverse().join('');
+}
+
+function parseJSON(text) {
+  try { return JSON.parse(text); }
+  catch (error) {
+    const closed = closeJSON(text);
+    if (closed === undefined) throw error;
+    return JSON.parse(closed);
+  }
 }
 
 const lineEditInputSchema = {
@@ -122,10 +172,23 @@ function resolveLineEdit(input, request) {
     throw repairableError('Put INDENT on the EDIT header. Prefix every source line with its space count and |. Omit Markdown fences.');
   }
   let snapshot = request.snapshots.get(request.readHandles.get(read_id) ?? read_id);
+  if (!snapshot && !request.editFiles && !request.useVerificationContext) {
+    // Meta AI can copy a handle from an older WhatsApp conversation. Accept
+    // the line range only if exactly one current excerpt contains it and the
+    // replacement keeps at least one of the selected source lines.
+    const candidates = [...request.snapshots.values()].filter(excerpt =>
+      start_line >= excerpt.first && end_line >= start_line &&
+      end_line < excerpt.first + excerpt.lines.length);
+    const kept = new Set(replacement.split('\n').map(line => line.trim()).filter(line => line.length > 3));
+    if (candidates.length === 1 && candidates[0].lines
+      .slice(start_line - candidates[0].first, end_line - candidates[0].first + 1)
+      .some(line => kept.has(line.trim()))) snapshot = candidates[0];
+  }
   if (!snapshot) {
     const guidance = request.editFiles
       ? 'Send the replacement code block for the current displayed excerpt.'
-      : 'Use a read_id from editable_reads or call Read again.';
+      : 'Use a read_id from editable_reads or call Read again. Current: ' +
+        (request.editableReads.map(read => read.read_id + ' ' + read.file_path + ' ' + read.start_line + '-' + read.end_line).join('; ') || 'none') + '.';
     throw repairableError('EditLines needs a current Read snapshot. ' + guidance);
   }
   const contains = excerpt => start_line >= excerpt.first && end_line >= start_line &&
@@ -404,6 +467,33 @@ function latestTaskIndex(messages) {
       !message.content.some(block => block.type === 'tool_result'))));
 }
 
+// Native results show whether the latest command failed, or whether files
+// changed after a failed command without a later run.
+function unfinishedWork(messages) {
+  const calls = new Map();
+  let failedCommand = false;
+  let editedAfterFailure = false;
+  let last;
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type === 'tool_use') calls.set(block.id, block);
+      if (block.type !== 'tool_result') continue;
+      const call = calls.get(block.tool_use_id);
+      if (!call) continue;
+      last = {name: call.name, failed: Boolean(block.is_error)};
+      if (call.name === 'Bash') {
+        failedCommand = last.failed;
+        editedAfterFailure = false;
+      } else if (['Edit', 'Write'].includes(call.name) && !block.is_error && failedCommand) {
+        editedAfterFailure = true;
+      }
+    }
+  }
+  if (last?.name === 'Bash' && last.failed) return 'The latest command failed and this reply requested no tool. If you described a next step, request that tool now. If you are blocked, give a final answer that explains the blocker.';
+  if (editedAfterFailure) return 'Files changed after the last failed command and nothing has run since. Request the command to check the change, or give a final answer that says it is untested.';
+}
+
 function latestToolStatus(messages, configuredCommand) {
   const last = messages.at(-1);
   if (last?.role !== 'user' || !Array.isArray(last.content)) return undefined;
@@ -662,7 +752,8 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const useSnapshot = Boolean(snapshotContext || editFiles) && taskIndex >= 0;
   const taskMessages = taskIndex >= 0 ? transcript.slice(taskIndex) : transcript;
   const readMessages = useSnapshot || editOptions.command ? taskMessages : transcript;
-  const reads = rangeEnabled ? trackReads(readMessages, Boolean(editOptions.command && !editFiles && !useSnapshot)) : new Map();
+  const reads = rangeEnabled ? trackReads(readMessages, Boolean(editOptions.command && !editFiles && !useSnapshot),
+    !editOptions.command && !editFiles && !useSnapshot) : new Map();
   const snapshots = editFiles
     ? new Map([...reads].filter(([, snapshot]) => editFiles.includes(snapshot.filePath)))
     : useSnapshot ? new Map([...reads].slice(-1)) : reads;
@@ -764,7 +855,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       JSON.stringify(payload)
     ].join('\n');
   const rangeGuide = rangeEnabled ? [
-    'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. A write, edit, or command makes prior reads ineligible.',
+    'To edit a file, use the standalone EDIT frame shown below, outside JSON. The gateway translates it into Claude Code’s native Edit. Select a read_id from editable_reads and use 1-based inclusive line numbers. If the file is missing from editable_reads, call Read first. Editing or writing a file makes its prior reads ineligible, so Read it again before the next edit to that file.',
     'Use the current read_id and inclusive range in the header. Paste literal replacement source with its indentation. Omit line numbers, prefixes, and surrounding source. To delete the selected lines, put END immediately after the header on its own line.',
     'If the replacement includes an entire multiline statement, select all its original lines. To move a statement within one excerpt, select a range that covers both locations and include the moved statement once.',
     'EDIT READ_ID START END_LINE',
@@ -844,7 +935,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   }
   prompt = 'TASK SYSTEM INSTRUCTIONS:\n' + systemText + '\n\n' + prompt;
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures,
+  const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
+    ? unfinishedWork(taskMessages) : undefined;
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished,
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -854,7 +947,7 @@ function hasEarlierAction(prefix) {
 }
 
 function parseReadOnlyEnvelope(text) {
-  try { return JSON.parse(text); }
+  try { return parseJSON(text); }
   catch (error) {
     // WhatsApp can deliver a Grep regex with source backslashes instead of
     // JSON-escaped backslashes. Repair only an invalid escape in that field.
@@ -866,7 +959,7 @@ function parseReadOnlyEnvelope(text) {
     if (fixed === match[1]) throw error;
     const literal = '"' + fixed + '"';
     const start = match.index + match[0].indexOf('"', match[0].indexOf(':'));
-    const reply = JSON.parse(text.slice(0, start) + literal + text.slice(match.index + match[0].length));
+    const reply = parseJSON(text.slice(0, start) + literal + text.slice(match.index + match[0].length));
     const [call] = Array.isArray(reply?.content) ? reply.content : [];
     if (reply?.content?.length !== 1 || call?.type !== 'tool_use' || call.name !== 'Grep' ||
         call.input?.pattern !== JSON.parse(literal)) throw error;
@@ -916,16 +1009,22 @@ function readBeforePathEdit(text, request) {
   return {type:'tool_use', id:'toolu_' + randomBytes(12).toString('hex'), name:'Read', input};
 }
 
-function checkVerificationReply(request, calls) {
+function checkVerificationReply(request, calls, finalAttempt = false) {
   if (request.unfinishedVerification && calls.length === 0) {
     throw repairableError('The configured test is still failing. Request a tool to investigate or edit the implementation.');
   }
+  // One reminder only. A second text reply is accepted as the final answer.
+  if (request.unfinished && calls.length === 0 && !finalAttempt) throw repairableError(request.unfinished);
 }
 
-export function parseReply(raw, request, {matchedTurn = false} = {}) {
+export function parseReply(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
   const original = raw.trim();
   const fence = /^(\x60{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i.exec(original);
-  const trimmed = fence ? fence[2].trim() : original;
+  // A repeated END after a complete frame carries no source. Keep the first.
+  const unwrapped = fence ? fence[2].trim() : original;
+  const trimmed = /^[ \t]*(?:EDIT|REPLACE)[ \t]+\S+[ \t]+\d+/m.test(unwrapped)
+    ? unwrapped.replace(/^(END(?:[ \t]+\S+)?)[ \t]*(?:\r?\n[ \t]*END[ \t]*)+$/gm, '$1')
+    : unwrapped;
   if (!trimmed) throw repairableError('Meta AI returned no content.');
   // Consumer WhatsApp supplies no tokenizer counts. These are estimates, not billing data.
   const usage = {input_tokens: Math.ceil(request.prompt.length / 4), output_tokens: Math.ceil(raw.length / 4)};
@@ -937,7 +1036,7 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
   if (read) return assistantMessage(request.model, [read], usage);
   let obj;
   try {
-    try { obj = JSON.parse(trimmed); }
+    try { obj = parseJSON(trimmed); }
     catch {
       if ((request.editFiles || request.useVerificationContext) &&
           (/^REPLACE[ \t]/.test(trimmed) || /^(?:FILE[ \t]|\x60{3,}(?!json\b))/i.test(original))) {
@@ -970,7 +1069,7 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
     const startsWithJson = /^(?:\{|\[(?![^\]\n]+\](?:\(|\[)))/.test(trimmed);
     const hasProtocolMarkers = /^[ \t]*(?:EDIT[ \t]+\S+[ \t]+\S+|(?:REPLACE|FILE)[ \t]+\d|<<<(?:FILE|OLD|NEW|END)>|\x60{3,}json\b)|"(?:request_id|tool_use)"|"content"\s*:/im.test(trimmed);
     if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && !startsWithJson && !hasProtocolMarkers) {
-      checkVerificationReply(request, []);
+      checkVerificationReply(request, [], finalAttempt);
       return assistantMessage(request.model, [{type: 'text', text: original}], usage);
     }
     throw repairableError('Meta AI did not return complete protocol JSON or a code frame.');
@@ -1035,7 +1134,7 @@ export function parseReply(raw, request, {matchedTurn = false} = {}) {
   if (['any', 'tool'].includes(request.choice.type) && !calls.length) throw repairableError('Meta AI omitted a required tool.');
   if (request.choice.type === 'tool' && calls.some(b => b.name !== request.choice.name)) throw repairableError('Meta AI selected the wrong required tool.');
   if (request.choice.disable_parallel_tool_use && calls.length > 1) throw repairableError('Meta AI requested parallel tools when disabled.');
-  checkVerificationReply(request, calls);
+  checkVerificationReply(request, calls, finalAttempt);
   return assistantMessage(request.model, blocks, usage);
 }
 
