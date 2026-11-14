@@ -1,4 +1,4 @@
-// Track test failures until the user or a potentially mutating tool changes the context.
+// Track test failures within the current user task.
 const READ_ONLY = new Set(['Read', 'Glob', 'Grep']);
 
 export function testCommand(tool, configuredCommand) {
@@ -46,12 +46,6 @@ export function testState(messages, configuredCommand) {
       }
     } else if (message.role === 'user') {
       const results = blocks.filter(block => block.type === 'tool_result');
-      if (!results.length && (typeof message.content === 'string' || blocks.some(block => block.type === 'text'))) {
-        failures.clear();
-        pending.clear();
-        latestFailure = undefined;
-        previousFailure = undefined;
-      }
       for (const result of results) {
         const command = pending.get(result.tool_use_id);
         if (!command) continue;

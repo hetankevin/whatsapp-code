@@ -65,11 +65,12 @@ const server = createGateway({
         }
         const initial = (await readFile(target,'utf8')).includes('"initial"');
         const editedFile = initial ? target : helper;
-        const selected = request.editableReads.findIndex(read => path.resolve(dir, read.file_path) === editedFile);
-        assert.ok(selected >= 0);
+        const selected = request.editableReads.find(read => path.resolve(dir, read.file_path) === editedFile);
+        assert.ok(selected);
+        assert.ok(request.prompt.includes(JSON.stringify(selected)));
         assert.match(request.prompt, /not ok 1 - reports expected result/);
         const replacement = initial ? source : helperSource;
-        const proposal = 'FILE ' + (selected + 1) + '\nREPLACE 1 1\n' + replacement + 'END\n' +
+        const proposal = 'EDIT ' + selected.read_id + ' 1 1\n' + replacement + 'END\n' +
           '[{"type":"tool_use","name":"Bash","input":{"command":"node --test"}}]';
         return parseReply(proposal,request,{matchedTurn:true});
       }

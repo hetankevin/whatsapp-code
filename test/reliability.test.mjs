@@ -21,9 +21,8 @@ test('project context identifies the real directory and loads only instruction c
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-function transportFixture(tools = []) {
+function transportFixture(tools = [], request = prepare({tools, system:'Use this project.', messages:[{role:'user',content:'hello'}]})) {
   const w = Object.create(WhatsApp.prototype);
-  const request = prepare({tools, system:'Use this project.', messages:[{role:'user',content:'hello'}]});
   const writes=[];let resolved, rejected;
   w.child = {stdin:{write:line=>writes.push(JSON.parse(line))}};
   w.pending = {id:'original',request,prompt:request.prompt,messageIds:new Set(),repairCount:0,
@@ -34,6 +33,8 @@ test('one format repair can recover a reply; old message targets cannot complete
   const f=transportFixture();
   await f.w.event({event:'message',id:'bad',target:'original',edit:'full',message:{conversation:'{broken json'}});
   assert.equal(f.writes.length,1);assert.notEqual(f.writes[0].id,'original');
+  assert.ok(f.writes[0].prompt.endsWith(f.request.prompt));
+  assert.doesNotMatch(f.writes[0].prompt, /broken json/);
   const valid=JSON.stringify({request_id:f.request.requestId,content:[{type:'text',text:'hello'}]});
   await f.w.event({event:'message',id:'late',target:'original',edit:'full',message:{conversation:valid}});
   assert.equal(f.resolved,undefined);
@@ -443,6 +444,10 @@ test('an unchanged failed test gets a repair with the assertion and can rerun af
   const run = request => parseReply(JSON.stringify({request_id:request.requestId,content:[testCall]}),request);
   const blocked = prepare({tools,messages});
   assert.throws(() => run(blocked), error => error.repairable && /not ok 2 - expires at deadline/.test(error.testFailure));
+  const reminded = prepare({tools,messages:[...messages,
+    {role:'user',content:[{type:'text',text:'<system-reminder>Follow the project instructions.</system-reminder>'}]}
+  ]});
+  assert.throws(() => run(reminded), error => error.repairable && /not ok 2 - expires at deadline/.test(error.testFailure));
   const edited = prepare({tools,messages:[...messages,
     {role:'assistant',content:[{type:'tool_use',id:'edit',name:'Edit',input:{file_path:'cache.mjs'}}]},
     {role:'user',content:[{type:'tool_result',tool_use_id:'edit',content:'File updated'}]}
@@ -503,6 +508,11 @@ test('a matched reply with later actions applies only the first encoded edit', (
     assert.equal(edit.input.new_string, 'const a = 1;\n  return "new";\n}');
     assert.equal(later, undefined);
   }
+  assert.throws(() => parseReply(first + '\n\nNext, apply this other edit:\n' + second,
+    request, {matchedTurn:true}), /one EDIT frame ending at its first standalone END/);
+  const fence = '\x60'.repeat(3);
+  const literal = 'EDIT ' + handle + ' 8 8\n' + fence + '\nEND\n' + fence + '\nEND';
+  assert.equal(parseReply(literal, request, {matchedTurn:true}).content[0].input.new_string, 'const a = 1;\nEND\n}');
   assert.throws(() => parseReply(first.replace(handle, 'r000000000000') + '\n' + bash,
     request, {matchedTurn:true}), /current Read snapshot/);
   assert.throws(() => parseReply(first + '\n' + bash, request), /complete protocol/);
@@ -555,7 +565,7 @@ test('recover a complete EDIT frame inside malformed JSON without changing liter
   assert.throws(() => parseReply(wrap(frame).replace('"EditLines"','"Edit"'),request), /complete protocol/);
 });
 
-test('a configured test verifies discovered edits without fixed files', () => {
+test('a configured test verifies discovered edits without fixed files', async () => {
   const tools = ['Read','Edit','Bash'].map(name => ({name,input_schema:{type:'object'}}));
   const command = 'make check';
   const options = {command};
@@ -577,11 +587,20 @@ test('a configured test verifies discovered edits without fixed files', () => {
   assert.throws(() => parseReply('Tests passed.',request,{matchedTurn:true}), /still failing/);
   assert.throws(() => parseReply('{"content":[{"type":"text","text":"Tests passed."}]}',request,
     {matchedTurn:true}), /still failing/);
-  assert.match(request.prompt, /FILE 1: caller\.js/);
-  assert.match(request.prompt, /FILE 2: callee\.js/);
+  assert.match(request.prompt, /editable_reads \(current excerpts\):/);
+  assert.match(request.prompt, /EDIT READ_ID START END_LINE/);
+  assert.doesNotMatch(request.prompt, /REPLACE START END/);
   assert.match(request.prompt, /Latest test failure:\n1 failing/);
-  assert.match(request.prompt, /REPLACE START END, using the inclusive line numbers of the lines you want to change/);
   assert.match(request.prompt, /innermost call first[^\n]*\ncallee\.js:1 function handle\(\) \{\}\ncaller\.js:1 function handle\(\) \{\}/);
+  const replacement = 'function handle() { return 1; }';
+  const currentEdit = (read, source) => 'EDIT ' + read.read_id + ' ' + read.start_line + ' ' + read.end_line + '\n' + source + '\nEND';
+  for (const read of request.editableReads) {
+    assert.ok(request.prompt.includes(JSON.stringify(read) + '\n' + read.start_line + '\tfunction handle() {}'));
+    const [edit] = parseReply(currentEdit(read, replacement), request, {matchedTurn:true}).content;
+    assert.equal(edit.name, 'Edit');
+    assert.equal(edit.input.file_path, read.file_path);
+    assert.equal(edit.input.new_string, replacement);
+  }
   const [proposal, trailing] = parseReply('FILE 2\nREPLACE 1 1\n0|function handle() { return 1; }\nEND\n' +
     '[{"type":"tool_use","name":"Bash","input":{"command":"make check"}}]',
     request,{matchedTurn:true}).content;
@@ -606,7 +625,19 @@ test('a configured test verifies discovered edits without fixed files', () => {
   assert.equal(retest.input.command, command);
   record(retest,'1 failing\n    at inner (callee.js:1:2)\n    at outer (caller.js:1:2)\n    receiver is undefined',true);
   record({type:'tool_use',id:'reread',name:'Read',input:{file_path:'caller.js'}},'1\tfunction handle() {}');
-  assert.match(turn().prompt, /Diagnostic lines that changed since the preceding run:\n    receiver is undefined/);
+  const revised = turn();
+  assert.match(revised.prompt, /Diagnostic lines that changed since the preceding run:\n    receiver is undefined/);
+  const f = transportFixture(tools, revised);
+  const reply = (id, target, conversation) => f.w.event({event:'message',id,target,edit:'full',message:{conversation}});
+  await reply('stale-read', 'original', currentEdit(request.editableReads[0], replacement));
+  assert.equal(f.resolved, undefined);
+  assert.equal(f.writes.length, 1);
+  const [repair] = f.writes;
+  assert.match(repair.prompt, /current Read snapshot.*editable_reads/);
+  assert.ok(repair.prompt.endsWith(revised.prompt));
+  assert.ok(!repair.prompt.includes(request.editableReads[0].read_id));
+  await reply('current-read', repair.id, currentEdit(revised.editableReads[0], replacement));
+  assert.equal(f.resolved.content[0].input.new_string, replacement);
   record({type:'tool_use',id:'last-edit',name:'Edit',input:{file_path:'src.js'}},'Applied');
   const [finalTest] = turn().localResult.content;
   record(finalTest,'1 passing');

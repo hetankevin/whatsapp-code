@@ -84,12 +84,12 @@ export class WhatsApp {
       if (final) p.resolve(reply);
       else p.settle = setTimeout(() => p.resolve(reply), 2500);
     } else if (final) {
-      this.repairOrReject(p, text);
+      this.repairOrReject(p);
     } else {
-      p.settle = setTimeout(() => this.repairOrReject(p, text), 2500);
+      p.settle = setTimeout(() => this.repairOrReject(p), 2500);
     }
   }
-  repairOrReject(p, text) {
+  repairOrReject(p) {
     if (this.pending !== p) return;
     const error = p.lastError;
     if (error?.generationFailure && !p.retriedGeneration) {
@@ -109,12 +109,9 @@ export class WhatsApp {
     ].join('\n');
     const maxChars = Math.min(60000, p.request.maxChars ?? 60000);
     if (repair.length > maxChars) return p.reject(error);
-    const quoted = error.staleRequest || p.request.textOnly || p.request.editFiles || p.request.useVerificationContext || !text
-      ? '' : '\n\nPrevious reply as quoted data:\n' + JSON.stringify(text);
-    const prompt = repair.length + quoted.length <= maxChars ? repair + quoted : repair;
     p.repairCount = (p.repairCount ?? 0) + 1;
     console.error('Meta AI reply rejected; requesting one repair. ' + error.message.split('\n', 1)[0]);
-    this.sendPrompt(p, prompt);
+    this.sendPrompt(p, repair);
   }
   sendPrompt(p, prompt) {
     p.prompt = prompt;
