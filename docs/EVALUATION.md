@@ -148,6 +148,8 @@ Isolation made coding worse. On the middle tier, A-B-B-A twice (24 runs per arm)
 
 Adding one complete worked exchange to the prompt (`WA_FEWSHOT=1`, f4c53a6) did not replace that history. Isolated sessions with the example against the shared chat, A-B-B-A twice: 8 versus 17 correct patches, 0 versus 16 end-to-end passes, and a test after the last edit in 1 versus 22 runs. The shared chat stays the default; both options stay off.
 
+A middle ground keeps history within one coding session but not across sessions: one bot session per Claude Code session (`WA_BOT_SESSION=task`, f120ed7). The first matched pair already showed the isolation failure: per-task sessions produced 4 of 6 correct patches but 0 end-to-end passes and never ran a test (only Read and Edit), against 3 correct, 3 end-to-end, and 5 tested runs for the shared chat in the same window. The remaining rounds were stopped to limit load on the account. Within one task, the session's own history does not teach Meta AI to test; only the long shared chat does.
+
 ### Long session, native compaction, and resume
 
 The two-module task (fix TTL and implement CSV in one session) at the default client window compacted natively once and twice, was resumed with `--resume` for a follow-up turn, and kept working for 6.5 and 8 minutes (13 edits each, 4 and 20 native test runs). Neither final patch was correct and both ended on an undecodable reply. Native compaction also occurred on its own in 9 dev and holdout sessions. Runs with a client window below the default thrashed: Claude Code's compaction buffer leaves almost no room, so smaller windows are not a useful way to force compaction.
