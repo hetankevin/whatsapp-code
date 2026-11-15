@@ -67,7 +67,7 @@ Run one batch at a time: the gateway serializes requests through one WhatsApp ch
 
 ## Decision
 
-**Not yet usable as the model for ordinary Claude Code coding sessions.** No tested configuration made repository repair reliable. Across 13 gateway revisions with native runs and every invocation mode, **1 of 138** scored BugsJS dev attempts passed (Express 20, background session), and **0 of 21** holdout attempts passed (14 sealed on frozen revisions, 7 unsealed reruns). Small self-contained fixes work part of the time: the TTL fix passed end to end in 12 of 23 attempts (12 of 18 from revision G onward); the CSV parser passed once in 23. Plain Q&A works (5 of 6 on the final measurement). Asking for Meta AI's "think hard" mode had no measurable effect.
+**Not yet usable as the model for ordinary Claude Code coding sessions.** No tested configuration made repository repair reliable. Across 13 gateway revisions with native runs and every invocation mode, **1 of 138** scored BugsJS dev attempts passed (Express 20, background session), and **0 of 21** holdout attempts passed (14 sealed on frozen revisions, 7 unsealed reruns). Small self-contained fixes work part of the time: the TTL fix passed end to end in 12 of 23 attempts (12 of 18 from revision G onward), six realistic small bug fixes passed in 20 of 42 matched attempts (between 4/12 and 7/12 per arm), and the CSV parser passed once in 23. Plain Q&A works (5 of 6 on the final measurement). Neither reasoning lever helped: Meta AI's "think hard" mode and a prompt-level reasoning cue both had no measurable effect.
 
 The native mechanics run: background sessions in worktrees, the interactive terminal, native compaction and resume, plain Q&A, and a fresh install. They are not fully robust: undecodable replies still end some sessions, and the edit format matters (see the isolation experiment). A controlled comparison of a direct request against the gateway's presentation, with identical inputs, showed both failure kinds: Meta AI fails to infer correct ESLint and CSV fixes in either presentation, and for Express 20 the presentation itself blocked a change Meta AI could describe. Gateway changes made from that evidence raised correct first proposals on Express 20 from 0 of 9 to 2 of 3, but did not raise end-to-end repair rates in native sessions.
 
@@ -154,6 +154,10 @@ The same general question (`[[1,[2]],3].flat()`) was answered wrong in every bat
 ### Reasoning mode ("think hard")
 
 The transport attached WhatsApp's `BotModeSelectionMetadata` with `THINK_HARD_MODE` to every outgoing message (`WA_BOT_MODE=think_hard`, verified in the transport's environment). Across 1,000+ default replies and every think-hard reply, the reply metadata was identical: `modelType LLAMA_PROD`, `premiumModelStatus AVAILABLE`, no mode echo, no reasoning steps, no thinking flag. Q&A answers and latencies matched, and the matched dev batch scored the same (0/7). There is no evidence that this account's Meta AI bot honors the selection; it stays off by default.
+
+### Prompt-level reasoning cue
+
+The terminal findings also proposed a prompt-level "think before acting" cue. With `WA_REASONING_CUE=1`, the gateway adds one instruction: check each stated or implied requirement and edge case against the code before editing. A-B-B-A on the middle tier, same revision (94230df), only the flag changed (verified from prompt sizes): cue off 5/12, cue on 4/12. No measurable gain; it stays off by default.
 
 ### Setup
 
