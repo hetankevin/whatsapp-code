@@ -67,7 +67,7 @@ Run one batch at a time: the gateway serializes requests through one WhatsApp ch
 
 ## Decision
 
-**Not yet usable as the model for ordinary Claude Code coding sessions.** No tested configuration made repository repair reliable. Across 13 gateway revisions with native runs and every invocation mode, **1 of 138** scored BugsJS dev attempts passed (Express 20, background session), and **0 of 21** holdout attempts passed (14 sealed on frozen revisions, 7 unsealed reruns). Small self-contained fixes work part of the time: the TTL fix passed end to end in 12 of 23 attempts (12 of 18 from revision G onward), six realistic small bug fixes passed in 22 of 48 matched attempts (between 4/12 and 7/12 per arm), and the CSV parser passed once in 23. Plain Q&A works (5 of 6 on the final measurement). Neither reasoning lever helped: Meta AI's "think hard" mode and a prompt-level reasoning cue both had no measurable effect.
+**Not yet usable as the model for ordinary Claude Code coding sessions.** No tested configuration made repository repair reliable. Across 13 gateway revisions with native runs and every invocation mode, **1 of 138** scored BugsJS dev attempts passed (Express 20, background session), and **0 of 21** holdout attempts passed (14 sealed on frozen revisions, 7 unsealed reruns). Small self-contained fixes work part of the time: the TTL fix passed end to end in 12 of 23 attempts (12 of 18 from revision G onward), six realistic small bug fixes passed in about 60 percent of matched default runs (29 of 48, after correcting one held-out judge), and the CSV parser passed once in 23. Plain Q&A works (5 of 6 on the final measurement). Neither reasoning lever helped: Meta AI's "think hard" mode and a prompt-level reasoning cue both had no measurable effect, and neither did testing after every edit or a requirements review after the tests pass.
 
 The native mechanics run: background sessions in worktrees, the interactive terminal, native compaction and resume, plain Q&A, and a fresh install. They are not fully robust: undecodable replies still end some sessions, and the edit format matters (see the isolation experiment). A controlled comparison of a direct request against the gateway's presentation, with identical inputs, showed both failure kinds: Meta AI fails to infer correct ESLint and CSV fixes in either presentation, and for Express 20 the presentation itself blocked a change Meta AI could describe. Gateway changes made from that evidence raised correct first proposals on Express 20 from 0 of 9 to 2 of 3, but did not raise end-to-end repair rates in native sessions.
 
@@ -130,13 +130,15 @@ The passing attempt read the response module, made one edit inside its native ba
 
 Six self-contained modules, each with one or two real bugs (Roman numerals in the 400s and 900s, semantic-version ordering, LRU recency and capacity, non-mutating deep merge, word wrap, interval merging), visible tests that fail, and a held-out judge with further edge cases. Each task was validated: the buggy source fails the visible tests and a reference fix passes everything. Same pass criteria as the TTL and CSV tasks.
 
-| Gateway | Rounds | End-to-end passes |
-|---|---|---|
-| O (71ed115) | round 1, before the outage | 2/6 (plus 1 correct patch cut off by a refusal) |
-| O | rounds 2 and 3 (A-B-B-A) | 6/12 |
-| P (519a86c): rerun the model's own test after each edit | rounds 1 and 2 (A-B-B-A) | 7/12 |
+Scorer correction: the original deep-merge judge also required that the result share no nested arrays with its inputs, which the task text does not state. The judge now checks only the stated requirements (inputs unchanged, nested keys merged, arrays replaced), and every saved deep-merge patch was rescored (0 of 13 passed under the old judge, 8 of 13 under the corrected one). The numbers below use the corrected judge for all arms.
 
-Per task across the four matched rounds: LRU 4/4, Roman numerals 4/4, word wrap 2/4, intervals 2/4, semver 1/4, deep merge 0/4. The failures are mostly patches that pass the visible tests but miss edge cases the task states (nested copies in deep merge, prerelease ordering in semver). Rerunning the test after every edit gave 7/12 against 6/12, a difference well within noise for this sample: sessions on these tasks already tested after most edits. It stays on branch p-rev.
+| Comparison (A-B-B-A, same revision except where noted) | Off / baseline | On / variant |
+|---|---|---|
+| O (71ed115) vs P (519a86c): rerun the model's own test after each edit | 8/12 | 7/12 |
+| Prompt-level reasoning cue (94230df) | 6/12 | 6/12 |
+| Requirements review after the first passing test (WA_REVIEW_AFTER_PASS, f76ead6) | 15/24 | 14/24 |
+
+Before the outage, O also had a first round of 3/6. Across the matched default arms (O, cue off, review off) the pass rate is 29 of 48, about 60 percent. Per task in the review comparison (off / on): Roman numerals 4/4 and 4/4, LRU 4/4 and 4/4, deep merge 2/4 and 2/4, word wrap 3/4 and 1/4, intervals 2/4 and 1/4, semver 0/4 and 2/4. No variant changed the overall rate beyond noise; all three stay off by default. The remaining failures are patches that pass the visible tests but miss stated edge cases (semver prerelease ordering, touching intervals, arrays replaced rather than merged).
 
 ### Long session, native compaction, and resume
 
