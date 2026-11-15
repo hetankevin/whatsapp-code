@@ -195,6 +195,24 @@ func main() {
 			}
 			used = true
 		}
+		// Ask for the premium model; replies report which model answered.
+		if os.Getenv("WA_BOT_MODEL") == "premium" {
+			meta.ModelMetadata = &waAICommon.BotModelMetadata{ModelType: waAICommon.BotModelMetadata_LLAMA_PROD_PREMIUM.Enum()}
+			used = true
+		}
+		// Declare client capabilities by name, for example RICH_RESPONSE_UR_REASONING.
+		if caps := os.Getenv("WA_BOT_CAPS"); caps != "" {
+			declared := &waAICommon.BotCapabilityMetadata{}
+			for _, name := range strings.Split(caps, ",") {
+				if v, ok := waAICommon.BotCapabilityMetadata_BotCapabilityType_value[strings.TrimSpace(name)]; ok {
+					declared.Capabilities = append(declared.Capabilities, waAICommon.BotCapabilityMetadata_BotCapabilityType(v))
+				}
+			}
+			if len(declared.Capabilities) > 0 {
+				meta.CapabilityMetadata = declared
+				used = true
+			}
+		}
 		if os.Getenv("WA_BOT_THREAD") == "incognito" {
 			meta.BotThreadInfo = &waAICommon.AIThreadInfo{ClientInfo: &waAICommon.AIThreadInfo_AIThreadClientInfo{
 				Type: waAICommon.AIThreadInfo_AIThreadClientInfo_INCOGNITO.Enum(),
