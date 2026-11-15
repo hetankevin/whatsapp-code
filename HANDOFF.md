@@ -250,3 +250,16 @@ CURRENT STATE (November 15, 17:30 local; supersedes the earlier "Current state" 
 - R (e5419b3): merges back-to-back tool envelopes (CLIPPY's way of asking for parallel reads; 6/6 captured decode failures recover offline). 74d0154: silent-backend fallback (60 s quiet -> resend via LLAMA_PROD, 20 min cooldown, /health shows it; WA_FALLBACK=0 disables), latency_ms in the private reply log, unmatched bot messages logged. 87 unit tests, 5 smoke paths, Go build/vet pass.
 - Running: gateway on 74d0154 with transport 146af907cb32 (/private/tmp/wa-eval.g8Qrqn/whatsapp-transport-fallback), reply log replies-recovery-private.jsonl. Recovery probe /private/tmp/wa-eval.g8Qrqn/clippy-recovery.sh (log clippy-recovery.log) sends one hello every 21 min and prints CLIPPY-BACK when CLIPPY answers.
 - Queued for when CLIPPY is back (scripts exist, not running): rest of q.sh (CSV/TTL x2, bg 4, tty 2, Q&A, long x2 with compaction+resume, dev repeats to 3, holdout repeats to 2; it skips completed attempts), fresh held-out group of 8 never-run Express bugs (/private/tmp/wa-eval-fresh.tOenuF/manifest.json: 3, 5, 8, 9, 18, 24, 26, 27; sealed), CLIPPY shared chat vs per-task session (fresh-install proxy, clippy-session-ab.sh). Pace these to stay under the CLIPPY limit (e.g. pause between cases), and rerun the three outage-hit holdouts.
+
+UPDATE (November 15, 18:40 local; supersedes the CURRENT STATE block above where they differ):
+- CLIPPY recovered after 27-48 min of silence (probe at 17:39 answered in 1.7 s).
+- New gateway revisions since e8b7553, all with unit tests (91), 5 smoke paths, Go build/vet:
+  R e5419b3 merge back-to-back envelopes into parallel read-only calls;
+  74d0154 silent-backend fallback (60 s -> LLAMA_PROD for 20 min), latency and unmatched-message diagnostics;
+  T e7ca8ab parallel Reads share the 400-line budget, EDIT READ_ID <id> a b accepted;
+  U e4b4859 shorten one huge Grep/Bash output instead of 413;
+  V 73b3f9e omit file contents Claude Code re-attaches after native compaction (root cause of every 413 on S, reproduced with the mock model).
+- S batch (74d0154): sealed fresh group (never-run Express 3,5,8,9,24,26,27; 18 excluded by preflight) 5/7, both failures 413 (fixed by T/V); original holdouts 4/7 (Express 1, 4, ESLint 3, hessian 2 pass; Express 23 parity; ESLint 19 and hessian 7 413); stopped after dev express-10 (413).
+- T batch running on V (73b3f9e): CSV 2/2, TTL 2/2; bg Express 13, 20 pass, ESLint 10 fail, Express 11 correct patch but its Edit is missing from Claude Code's background transcript (capture gap); then tty, Q&A, long x2, dev x2, holdout x2 (unsealed), fresh x2 (unsealed). Log /private/tmp/wa-eval.g8Qrqn/t.log, ends T-DONE; clippy-session-ab.sh (fresh-install proxy) follows automatically.
+- Final sealed group, prepared and preflighted but NOT run: /private/tmp/wa-eval-sealed.N2Hg0A/sealed-final.json (ESLint 1,2,4,6,7,8; hessian.js 3,5,8,9). Run it exactly once on the frozen final revision, after T and CLIPSESS, with WA_EVAL_REPLY_LOG and WA_EVAL_DEFAULT_BACKEND=1 and --pause 60. Do not change the gateway between that run and the report.
+- Ledger of every decision: /private/tmp/wa-eval.g8Qrqn/AUDIT.md (private).
