@@ -33,7 +33,7 @@ MOCHA = {
 
 def run(cmd, cwd):
     done = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=300)
-    out = done.stdout + done.stderr
+    out = re.sub(r'\x1b\[[0-9;]*m', '', done.stdout + done.stderr)
     titles = sorted(set(re.findall(r'^\s*\d+\) ([^\n]+)', out, re.M)))
     return done.returncode, titles
 
