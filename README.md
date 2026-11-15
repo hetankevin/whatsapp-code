@@ -90,6 +90,7 @@ The device database, gateway token, and pairing page stay in local application s
 | WA_TEST_COMMAND | node --test in fixed-file mode | Run the exact command after each successful edit. Fixed-file mode also runs it before editing. In discovery mode, a successful search or read triggers a baseline test if the model has yet to run it. Claude Code applies its Bash permissions. |
 | WA_EDIT_RANGES | unset | JSON array in edit target order. Use a one-based [offset, limit] pair to read a fixed excerpt or null to read the whole file. |
 | WA_BG_WORKTREE | on | Set to 0 on the launcher to keep `--bg` sessions out of a native worktree |
+| WA_BOT_CAPS | RICH_RESPONSE_UR_REASONING | Client capabilities declared to Meta AI on each message. The default routes replies to Meta AI's CLIPPY backend, which coded much better in the evaluation. Set to none for the older LLAMA_PROD backend. Set on the server. |
 | WA_BOT_MODE | unset | Set to think_hard on the server to request Meta AI's think-hard mode (experimental; see the evaluation notes) |
 | WA_REPLY_LOG | unset | Absolute path on the server for a private, owner-only log of Meta AI replies and reply metadata. Contains source and prompts; keep it local. |
 | GO_BINARY | go | Compiler for npm run build |

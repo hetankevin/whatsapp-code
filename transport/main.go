@@ -200,8 +200,14 @@ func main() {
 			meta.ModelMetadata = &waAICommon.BotModelMetadata{ModelType: waAICommon.BotModelMetadata_LLAMA_PROD_PREMIUM.Enum()}
 			used = true
 		}
-		// Declare client capabilities by name, for example RICH_RESPONSE_UR_REASONING.
-		if caps := os.Getenv("WA_BOT_CAPS"); caps != "" {
+		// Declare client capabilities by name. Declaring reasoning support routes
+		// replies to Meta AI's CLIPPY backend, which codes far better than the
+		// LLAMA_PROD default (docs/EVALUATION.md). WA_BOT_CAPS=none turns it off.
+		caps := os.Getenv("WA_BOT_CAPS")
+		if caps == "" {
+			caps = "RICH_RESPONSE_UR_REASONING"
+		}
+		if caps != "none" {
 			declared := &waAICommon.BotCapabilityMetadata{}
 			for _, name := range strings.Split(caps, ",") {
 				if v, ok := waAICommon.BotCapabilityMetadata_BotCapabilityType_value[strings.TrimSpace(name)]; ok {
