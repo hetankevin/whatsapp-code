@@ -33,7 +33,7 @@ import subprocess
 import tempfile
 import time
 
-from eval_coding import backends_since, reply_log_offset
+from eval_coding import backends_since, reply_log_offset, wait_for_quota
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ('{task}\n\nFix the implementation in this checkout. Preserve the supplied tests, '
@@ -473,13 +473,14 @@ def main():
                                                               str(project.resolve()): {'hasTrustDialogAccepted': True}}}))
             log_start = args.gateway_log.stat().st_size if args.gateway_log and args.gateway_log.exists() else 0
             replies_at = reply_log_offset()
+            quota_wait = wait_for_quota()
             waited = wait_ready()
             if waited is None:
                 Path(stem + '.json').write_text(json.dumps(dict(case=case['id'], label=args.label, repeat=k,
                     blocked='gateway not ready for 600 s', passed=False)) + '\n')
                 print('blocked', case['id'], k, 'gateway not ready', flush=True)
                 continue
-            print('running', args.label, case['id'], k, args.mode, 'waited', waited, flush=True)
+            print('running', args.label, case['id'], k, args.mode, 'waited', waited, 'quota wait', quota_wait, flush=True)
             run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, args.resume_prompt)
             facts = analyse(run.pop('events'), case['cmd'])
             # Background sessions edit inside a native worktree under .claude/worktrees.

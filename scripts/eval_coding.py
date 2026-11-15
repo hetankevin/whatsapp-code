@@ -140,6 +140,40 @@ def backends_since(start):
             counts[name] = counts.get(name, 0) + 1
     return counts
 
+
+def wait_for_quota():
+    """Wait while the default backend's replies in the past hour reach
+    WA_EVAL_CLIPPY_PER_HOUR (counted over WA_EVAL_QUOTA_LOGS or WA_EVAL_REPLY_LOG). Meta AI's CLIPPY
+    backend stops answering an account after roughly 250 replies in an hour.
+    Returns seconds waited."""
+    import datetime
+    import time
+    import glob
+    budget = int(os.environ.get('WA_EVAL_CLIPPY_PER_HOUR') or 0)
+    # The quota is per account: count every reply log (WA_EVAL_QUOTA_LOGS glob).
+    pattern = os.environ.get('WA_EVAL_QUOTA_LOGS') or os.environ.get('WA_EVAL_REPLY_LOG')
+    if not budget or not pattern:
+        return 0
+    begin = time.time()
+    while True:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        recent = []
+        for log in glob.glob(pattern):
+            for line in Path(log).read_text(errors='replace').split('\n'):
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if ((record.get('meta') or {}).get('infra') or {}).get('botBackend') != 'CLIPPY':
+                    continue
+                at = datetime.datetime.fromisoformat(record['time'].replace('Z', '+00:00'))
+                if (now - at).total_seconds() < 3600:
+                    recent.append(at)
+        if len(recent) < budget:
+            return round(time.time() - begin)
+        oldest = min(recent)
+        time.sleep(max(30, 3600 - (now - oldest).total_seconds() + 5))
+
 def exercise(name, mode, timeout, output, tools, verify_edits=False, *, spec=None):
     spec = SCENARIOS[name] if spec is None else spec
     sources = spec.get("sources") or {spec["module"]: spec["source"]}
@@ -169,6 +203,7 @@ def exercise(name, mode, timeout, output, tools, verify_edits=False, *, spec=Non
                "--tools", tools,
                "--allowedTools", *allowed_tools,
                "--", spec["task"]]
+    wait_for_quota()
     start = time.monotonic()
     replies_at = reply_log_offset()
     timed_out = False
