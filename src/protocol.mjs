@@ -1270,6 +1270,21 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     return prompt;
   };
   let prompt = build();
+  // After a native compaction, Claude Code re-attaches files read earlier as
+  // system-reminder text in the latest message. They duplicate files the model
+  // can read again, so they leave the WhatsApp view first when it is too long.
+  if (prompt.length > maxChars && !textOnly && !editFiles && !useSnapshot && !useVerificationContext) {
+    const reattached = messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
+      .filter(block => block.type === 'text' && typeof block.text === 'string' && block.text.length > 400 &&
+        block.text.startsWith('<system-reminder>\nResult of calling the Read tool:'));
+    for (const block of reattached) {
+      if (prompt.length <= maxChars) break;
+      block.text = '<system-reminder>\nResult of calling the Read tool: [' + block.text.length +
+        ' characters of file contents re-attached after compaction, omitted to fit the WhatsApp limit. Read the file again if you need it.]\n</system-reminder>';
+      omittedOutputs++;
+      prompt = build();
+    }
+  }
   // Claude Code owns the transcript and its compaction. If the WhatsApp view
   // still exceeds the limit, omit the oldest tool outputs from that view only.
   // The task, the latest exchange, and excerpts still being edited stay.

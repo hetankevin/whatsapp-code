@@ -315,3 +315,18 @@ test('one huge search output in the latest exchange is shortened instead of fail
  assert.match(r.prompt, /match number 0 with/);
  assert.match(r.prompt, /match number 3999 with/);
 });
+test('file contents re-attached after compaction leave the WhatsApp view before the latest tool output', () => {
+ const schema = {type:'object',properties:{file_path:{type:'string'},offset:{type:'integer'},limit:{type:'integer'},old_string:{type:'string'},new_string:{type:'string'}},additionalProperties:true};
+ const tools = ['Read','Edit'].map(name => ({name,description:name,input_schema:schema}));
+ const file = n => Array.from({length: 300}, (_, i) => `${i + 1}\tconst value${n}_${i} = compute(${i}); // keep this line long enough`).join('\n');
+ const reminder = n => [{type:'text',text:'<system-reminder>\nCalled the Read tool with the following input: {"file_path":"lib/m' + n + '.js"}\n</system-reminder>'},
+  {type:'text',text:'<system-reminder>\nResult of calling the Read tool:\n' + file(n) + '\n</system-reminder>'}];
+ const body = {model:'meta-ai-whatsapp',max_tokens:1024,tools,messages:[
+  {role:'user',content:'This session is being continued from a previous conversation. Summary: fix lib/m3.js. ' + 'Detail. '.repeat(2000)},
+  {role:'assistant',content:[{type:'tool_use',id:'toolu_last',name:'Read',input:{file_path:'lib/m3.js'}}]},
+  {role:'user',content:[{type:'tool_result',tool_use_id:'toolu_last',content:file(3)}, ...reminder(1), ...reminder(2)]}]};
+ const r = prepare(body);
+ assert.ok(r.prompt.length <= 60000);
+ assert.match(r.prompt, /re-attached after compaction, omitted/);
+ assert.match(r.prompt, /const value3_299 = compute/);
+});
