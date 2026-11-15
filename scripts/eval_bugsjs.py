@@ -220,7 +220,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
             exit_code = child.returncode
-        events = list(events_of(Path(out_stem + '.jsonl').read_text(errors='replace').splitlines()))
+        events = list(events_of(Path(out_stem + '.jsonl').read_text(errors='replace').split('\n')))
         result = next((e for e in reversed(events) if e.get('type') == 'result'), {})
         session = result.get('session_id')
         error = str(result.get('result') or '')[:300] if (result.get('is_error') or exit_code) else None
@@ -239,7 +239,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
                 exit_code = child.returncode
-            later = list(events_of(Path(out_stem + '-resume.jsonl').read_text(errors='replace').splitlines()))
+            later = list(events_of(Path(out_stem + '-resume.jsonl').read_text(errors='replace').split('\n')))
             result = next((e for e in reversed(later) if e.get('type') == 'result'), {})
             error = str(result.get('result') or '')[:300] if (result.get('is_error') or exit_code) else None
             final = str(result.get('result') or '')
@@ -257,7 +257,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
 
         def transcript():
             for path in (config / 'projects').glob('*/' + session + '.jsonl'):
-                yield from events_of(path.read_text(errors='replace').splitlines())
+                yield from events_of(path.read_text(errors='replace').split('\n'))
         finished, stable = None, 0
         while time.time() - begin < budget:
             history = [e for e in transcript() if e.get('type') in ('assistant', 'user')]
@@ -293,7 +293,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
 
         def transcript():
             for path in (config / 'projects').glob('*/' + session + '*.jsonl'):
-                yield from events_of(path.read_text(errors='replace').splitlines())
+                yield from events_of(path.read_text(errors='replace').split('\n'))
         finished = None
         while time.time() - begin < budget:
             history = list(transcript())

@@ -128,7 +128,7 @@ def backends_since(start):
     counts = {}
     with open(log, 'rb') as handle:
         handle.seek(start)
-        for line in handle.read().decode(errors='replace').splitlines():
+        for line in handle.read().decode(errors='replace').split('\n'):
             try:
                 record = json.loads(line)
             except ValueError:
@@ -188,7 +188,7 @@ def exercise(name, mode, timeout, output, tools, verify_edits=False, *, spec=Non
                 stdout, stderr = proc.communicate()
         code = proc.returncode
         events = []
-        for line in stdout.splitlines():
+        for line in stdout.split('\n'):  # JSON lines may contain U+2028
             try: events.append(json.loads(line))
             except json.JSONDecodeError: pass
         calls = {}
