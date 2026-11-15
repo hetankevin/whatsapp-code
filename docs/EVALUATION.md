@@ -13,6 +13,7 @@ Raw chats, prompts, transcripts, candidate diffs, fixture copies, reply diagnost
 | Claude Code | 2.1.325 (auto-updated from 2.1.322 before the first scored run; every scored run's init event reports 2.1.325) |
 | Go (transport build) | 1.26.11 |
 | Bot | 867051314767696@bot (Meta AI) |
+| Meta AI backend | `LLAMA_PROD` for every batch through revision O and the middle-tier comparisons; `CLIPPY` from revision Q (e8b7553) onward |
 | Baseline adapter | 7e33e34 |
 | Frozen revisions | G = acc16dc, H = 08bda71 (default-mode gateway identical to 2337fbd); later revisions I 8736083, J 4039702, K ab3aeba, L 7ab101e, M a6e086a, N accb621, final O 71ed115 |
 | Client context window | 26,000 tokens (launcher default) |
@@ -66,6 +67,18 @@ Failure layers (`scripts/summarize_evals.py`): decode (gateway could not decode 
 Run one batch at a time: the gateway serializes requests through one WhatsApp chat. Keep fixtures outside `/tmp` (macOS deletes files there after three days without access) and keep the machine awake (`caffeinate -i`).
 
 ## Decision
+
+**Update, November 15 (in progress): a different Meta AI backend changes the picture.** Every result below this update was measured on Meta AI's `LLAMA_PROD` backend. Declaring one client capability in the outgoing bot metadata (`RICH_RESPONSE_UR_REASONING`) routes replies to a backend the bot reports as `CLIPPY`; it is now the default (revision e8b7553, transport switch `WA_BOT_CAPS`). On CLIPPY so far:
+
+| Suite | LLAMA_PROD | CLIPPY |
+|---|---|---|
+| Six small realistic fixes, matched A-B-B-A ×2, same binary | 13/24 end to end | **24/24** end to end (median 14.5 s vs 27.2 s per task) |
+| BugsJS dev cases (same 7 cases, same scorer) | 1/138 over all revisions; 0/7 on O | **6/7** (all six Express cases; ESLint 10 passed its target and suite but failed one held-out ESLint contract check) |
+| Sealed holdouts (same 7 cases) | 0/21 | **3/4** completed (Express 1, Express 4, ESLint 3; Express 23 broke another test in its file); 3 more ended in the CLIPPY outage below and are not counted |
+
+**Limit found:** after about 250 CLIPPY replies in 33 minutes (peak 66 in five minutes), CLIPPY stopped answering this account entirely (no reply, no notice), while `LLAMA_PROD` kept answering. The gateway now detects 60 s of silence, resends the same prompt through the standard backend, and stays there for 20 minutes (`WA_FALLBACK`, revision 74d0154); a live check recovered in 64 s instead of a five-minute hang. How long the limit lasts is being measured. The remaining batch (synthetic tasks, background and terminal modes, Q&A, long session with compaction and resume, repeats, and a fresh held-out group of eight never-run Express bugs) resumes when CLIPPY answers again.
+
+### Before the backend switch
 
 **Not yet usable as the model for ordinary Claude Code coding sessions.** No tested configuration made repository repair reliable. Across 13 gateway revisions with native runs and every invocation mode, **1 of 138** scored BugsJS dev attempts passed (Express 20, background session), and **0 of 21** holdout attempts passed (14 sealed on frozen revisions, 7 unsealed reruns). Small self-contained fixes work part of the time: the TTL fix passed end to end in 12 of 23 attempts (12 of 18 from revision G onward), six realistic small bug fixes passed in about 60 percent of matched default runs (29 of 48, after correcting one held-out judge), and the CSV parser passed once in 23. Plain Q&A works (5 of 6 on the final measurement). Neither reasoning lever helped: Meta AI's "think hard" mode and a prompt-level reasoning cue both had no measurable effect, and neither did testing after every edit or a requirements review after the tests pass.
 
@@ -165,7 +178,7 @@ The same general question (`[[1,[2]],3].flat()`) was answered wrong in every bat
 
 ### Reasoning mode ("think hard")
 
-The transport attached WhatsApp's `BotModeSelectionMetadata` with `THINK_HARD_MODE` to every outgoing message (`WA_BOT_MODE=think_hard`, verified in the transport's environment). Across 1,000+ default replies and every think-hard reply, the reply metadata was identical: `modelType LLAMA_PROD`, `premiumModelStatus AVAILABLE`, no mode echo, no reasoning steps, no thinking flag. Q&A answers and latencies matched, and the matched dev batch scored the same (0/7). There is no evidence that this account's Meta AI bot honors the selection; it stays off by default.
+The transport attached WhatsApp's `BotModeSelectionMetadata` with `THINK_HARD_MODE` to every outgoing message (`WA_BOT_MODE=think_hard`, verified in the transport's environment). Across 1,000+ default replies and every think-hard reply, the reply metadata was identical: `modelType LLAMA_PROD`, `premiumModelStatus AVAILABLE`, no mode echo, no reasoning steps, no thinking flag. Q&A answers and latencies matched, and the matched dev batch scored the same (0/7). There is no evidence that this account's Meta AI bot honors the selection; it stays off by default. Correction (November 15): the selection was ignored because the client never declared that it can show reasoning. Declaring `RICH_RESPONSE_UR_REASONING`, with or without think-hard, switches the backend to CLIPPY (see the decision update); think-hard itself adds nothing measurable on top.
 
 ### Prompt-level reasoning cue
 
