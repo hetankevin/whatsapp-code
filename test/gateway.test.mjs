@@ -300,3 +300,18 @@ test('parallel Reads share the read budget', () => {
  assert.deepEqual(parseReply(read('a.js') + read('b.js'), r, {matchedTurn:true}).content.map(b => b.input.limit), [200, 200]);
  assert.deepEqual(parseReply(read('a.js') + read('b.js') + read('c.js') + read('d.js'), r, {matchedTurn:true}).content.map(b => b.input.limit), [120, 120, 120, 120]);
 });
+test('one huge search output in the latest exchange is shortened instead of failing the request', () => {
+ const schema = {type:'object',properties:{pattern:{type:'string'},file_path:{type:'string'},old_string:{type:'string'},new_string:{type:'string'}},additionalProperties:true};
+ const tools = ['Grep','Read','Edit'].map(name => ({name,description:name,input_schema:schema}));
+ const huge = Array.from({length: 4000}, (_, i) => `lib/file${i}.js:${i}: match number ${i} with some context`).join('\n');
+ const body = {model:'meta-ai-whatsapp',max_tokens:1024,tools,messages:[
+  {role:'user',content:'Find where the option is parsed'},
+  {role:'assistant',content:[{type:'tool_use',id:'toolu_grep',name:'Grep',input:{pattern:'option'}}]},
+  {role:'user',content:[{type:'tool_result',tool_use_id:'toolu_grep',content:huge}]}]};
+ assert.ok(huge.length > 150000);
+ const r = prepare(body);
+ assert.ok(r.prompt.length <= 60000);
+ assert.match(r.prompt, /characters of this output omitted to fit the WhatsApp limit/);
+ assert.match(r.prompt, /match number 0 with/);
+ assert.match(r.prompt, /match number 3999 with/);
+});

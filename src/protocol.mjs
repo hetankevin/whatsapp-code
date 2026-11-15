@@ -1103,6 +1103,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   // payload so older tasks and long tool output do not bury it.
   const focusRequest = taskIndex >= 0 && choice.type !== 'none';
   let omittedOutputs = 0;
+  let shortenedOutputs = 0;
   const build = () => {
     const payload = {
       tools: modelTools.map(({name, description, input_schema}) => ({name, description, input_schema})),
@@ -1291,6 +1292,29 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
         }
       }
       omittedOutputs++;
+      prompt = build();
+    }
+  }
+  // One huge search or command output in the latest exchange can still
+  // exceed the limit. Keep the start and end of the largest such outputs in
+  // the WhatsApp view, with a note. Read outputs stay whole: edits use them.
+  if (prompt.length > maxChars && !textOnly && !editFiles && !useSnapshot && !useVerificationContext) {
+    const names = new Map();
+    for (const message of messages) {
+      if (Array.isArray(message.content)) for (const block of message.content) if (block.type === 'tool_use') names.set(block.id, block.name);
+    }
+    const text = block => typeof block.content === 'string' ? block.content
+      : Array.isArray(block.content) ? block.content.map(part => part?.text ?? '').join('\n') : '';
+    const large = messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
+      .filter(block => block.type === 'tool_result' && names.get(block.tool_use_id) !== 'Read' && text(block).length > 3000)
+      .sort((a, b) => text(b).length - text(a).length);
+    for (const block of large) {
+      if (prompt.length <= maxChars) break;
+      const full = text(block);
+      const keep = Math.max(2000, full.length - (prompt.length - maxChars) - 400);
+      const head = Math.ceil(keep * 0.7);
+      block.content = full.slice(0, head) + '\n[' + (full.length - keep) + ' characters of this output omitted to fit the WhatsApp limit. Narrow the search or command if you need them.]\n' + full.slice(full.length - (keep - head));
+      shortenedOutputs++;
       prompt = build();
     }
   }
