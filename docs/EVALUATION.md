@@ -133,10 +133,10 @@ Six self-contained modules, each with one or two real bugs (Roman numerals in th
 | Gateway | Rounds | End-to-end passes |
 |---|---|---|
 | O (71ed115) | round 1, before the outage | 2/6 (plus 1 correct patch cut off by a refusal) |
-| O | rounds 2 and 3 (A-B-B-A) | 7/12 |
+| O | rounds 2 and 3 (A-B-B-A) | 6/12 |
 | P (519a86c): rerun the model's own test after each edit | rounds 1 and 2 (A-B-B-A) | 7/12 |
 
-Per task across the four matched rounds: LRU 4/4, Roman numerals 4/4, word wrap 2/4, intervals 2/4, semver 1/4, deep merge 0/4. The failures are mostly patches that pass the visible tests but miss edge cases the task states (nested copies in deep merge, prerelease ordering in semver). Rerunning the test after every edit made no difference here, because sessions on these tasks already tested after their last edit; it stays on branch p-rev.
+Per task across the four matched rounds: LRU 4/4, Roman numerals 4/4, word wrap 2/4, intervals 2/4, semver 1/4, deep merge 0/4. The failures are mostly patches that pass the visible tests but miss edge cases the task states (nested copies in deep merge, prerelease ordering in semver). Rerunning the test after every edit gave 7/12 against 6/12, a difference well within noise for this sample: sessions on these tasks already tested after most edits. It stays on branch p-rev.
 
 ### Long session, native compaction, and resume
 
