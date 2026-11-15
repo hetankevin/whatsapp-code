@@ -36,6 +36,9 @@ def layer(report):
         return 'context'
     if 'snapshot' in error or 'stale' in error.lower() or 'does not match this request' in error:
         return 'identity'
+    # Meta AI sent nothing (504) or WhatsApp dropped the connection (503).
+    if 'response timed out' in error or '503 disconnected' in error:
+        return 'no reply'
     if error:
         return 'decode'
     if 'worktree' in final.lower() or 'permission' in final.lower():
@@ -47,6 +50,12 @@ def layer(report):
     if correct or not edits:
         return 'turn'  # stopped without a change, or without a successful test after it
     return 'patch'
+
+
+def backend(report):
+    """Which Meta AI backend answered, when the run recorded it (WA_EVAL_REPLY_LOG)."""
+    counts = report.get('backends')
+    return '+'.join(sorted(counts)) if counts else ''
 
 
 def load(paths):
@@ -61,20 +70,22 @@ def load(paths):
                 continue
             if report.get('blocked'):
                 rows.append(dict(batch=report.get('label'), case=report['case'], group='blocked', mode=None, seconds=None,
-                                 correct=False, passed=False, native=False, edits=0, compactions=0, layer='blocked'))
+                                 correct=False, passed=False, native=False, edits=0, compactions=0, layer='blocked',
+                                 backend=''))
             elif 'case' in report:
                 rows.append(dict(batch=report.get('label'), case=report['case'], group=report.get('group') or 'dev',
                                  mode=report.get('mode'), seconds=report.get('seconds'),
                                  correct=bool(report.get('patch_correct')), passed=bool(report.get('passed')),
                                  native=bool(report.get('native_test_pass_after_edit')),
                                  edits=report.get('edits_ok'), compactions=report.get('compactions', 0),
-                                 layer=layer(report)))
+                                 layer=layer(report), backend=backend(report)))
             elif 'scenario' in report:
                 correct = bool(report.get('visible') and report.get('held_out') and report.get('implementation_only'))
                 rows.append(dict(batch=path.parent.name, case=report['scenario'], group='synthetic', mode='print',
                                  seconds=report.get('seconds'), correct=correct, passed=bool(report.get('passed')),
                                  native=bool(report.get('passed_tests_after_edit')),
-                                 edits=report.get('successful_line_edits'), compactions=0, layer=layer(report)))
+                                 edits=report.get('successful_line_edits'), compactions=0, layer=layer(report),
+                                 backend=backend(report)))
     return rows
 
 
@@ -83,12 +94,12 @@ def main():
     parser.add_argument('roots', nargs='+', help='result directories')
     args = parser.parse_args()
     rows = load(args.roots)
-    print('| batch | case | group | mode | pass | patch correct | native test after edit | edits | compactions | seconds | layer |')
-    print('|---|---|---|---|---|---|---|---|---|---|---|')
+    print('| batch | case | group | mode | pass | patch correct | native test after edit | edits | compactions | seconds | layer | backend |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|')
     for r in sorted(rows, key=lambda r: (str(r['batch']), r['case'])):
         print(f"| {r['batch']} | {r['case']} | {r['group']} | {r['mode']} | {'yes' if r['passed'] else 'no'} | "
               f"{'yes' if r['correct'] else 'no'} | {'yes' if r['native'] else 'no'} | {r['edits']} | "
-              f"{r['compactions']} | {r['seconds']} | {r['layer']} |")
+              f"{r['compactions']} | {r['seconds']} | {r['layer']} | {r['backend']} |")
     print()
     print('| batch | attempts | pass | patch correct | median seconds | failure layers |')
     print('|---|---|---|---|---|---|')
