@@ -1369,3 +1369,11 @@ test('an opt-in requirements review follows the first passing test after edits',
   const second = prepare({tools, messages: [...messages, ...edit('e2'), ...pass('t2')]}, 60000, false, undefined, {reviewAfterPass: true});
   assert.equal(parseReply('Done.', second, {matchedTurn: true}).content[0].type, 'text');
 });
+
+test('the worked example appears only when enabled and only for coding requests', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const body = {tools, messages: [{role: 'user', content: 'Fix it.'}]};
+  assert.doesNotMatch(prepare(body).prompt, /Example of a complete exchange/);
+  assert.match(prepare(body, 60000, false, undefined, {fewShot: true}).prompt, /Example of a complete exchange[\s\S]*EDIT READ_ID 2 2/);
+  assert.doesNotMatch(prepare({messages: body.messages}, 60000, false, undefined, {fewShot: true}).prompt, /Example of a complete exchange/);
+});

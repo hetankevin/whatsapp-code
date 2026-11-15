@@ -1112,6 +1112,22 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
             choice.type === 'tool' ? 'Use the required tool ' + choice.name + '.' :
               'When your next step is to search, read, edit, or test, request the corresponding tool now.'
         ] : []),
+        // Opt-in (WA_FEWSHOT=1): one complete worked exchange, so a fresh chat
+        // learns the workflow from the prompt rather than from chat history.
+        ...(editOptions.fewShot && rangeEnabled && validators.has('Bash') && choice.type === 'auto' ? [
+          'Example of a complete exchange (an illustration only; use the real task, files, and read_ids):',
+          'Task: add(a, b) in math.js returns a - b. Fix it and run npm test.',
+          'Reply 1: {"content":[{"type":"tool_use","name":"Read","input":{"file_path":"math.js"}}]}',
+          'Result: 1\texport function add(a, b) {  2\t  return a - b;  3\t}',
+          'Reply 2: EDIT READ_ID 2 2',
+          '  return a + b;',
+          'END',
+          'Result: The file math.js has been updated successfully.',
+          'Reply 3: {"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test","description":"Run tests"}}]}',
+          'Result: 1 failing: add(-1, 1) expected 0',
+          'Reply 4: (read the failure, then send the next Read, EDIT, or test call; never claim success before a passing test)',
+          'Final reply after a passing test: Fixed add() to return a + b; npm test passes.'
+        ] : []),
         // Opt-in experiment (WA_REASONING_CUE=1 on the server): a prompt-level
         // cue to reason about requirements before editing.
         ...(editOptions.reasoningCue && tools.length && choice.type !== 'none' ? [

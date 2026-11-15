@@ -6,7 +6,7 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { GatewayError, prepare, streamMessage } from './protocol.mjs';
 
-export function createGateway({backend, token, maxChars = 60000, snapshotContext = false, rawPrompts = false, reasoningCue = false, reviewAfterPass = false}) {
+export function createGateway({backend, token, maxChars = 60000, snapshotContext = false, rawPrompts = false, reasoningCue = false, reviewAfterPass = false, fewShot = false}) {
   let busy = false;
   const waiting = new Set();
   const cancelled = () => new GatewayError('Request cancelled.', 499);
@@ -129,7 +129,7 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
         ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars)
         : requestClass && requestClass !== 'main'
           ? prepare(body, maxChars)
-          : prepare(body, maxChars, snapshotContext, editFiles, {...editOptions, ...(reasoningCue ? {reasoningCue} : {}), ...(reviewAfterPass ? {reviewAfterPass} : {})});
+          : prepare(body, maxChars, snapshotContext, editFiles, {...editOptions, ...(reasoningCue ? {reasoningCue} : {}), ...(reviewAfterPass ? {reviewAfterPass} : {}), ...(fewShot ? {fewShot} : {})});
       if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       if (res.destroyed) return;
@@ -181,7 +181,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const port=Number(process.env.WA_PORT??8787);
   const backend=new WhatsApp({root,stateDir});
   const snapshotContext = process.env.WA_SNAPSHOT_CONTEXT === '1';
-  const server=createGateway({backend,token,snapshotContext,rawPrompts:process.env.WA_EXPERIMENT_RAW==='1',reasoningCue:process.env.WA_REASONING_CUE==='1',reviewAfterPass:process.env.WA_REVIEW_AFTER_PASS==='1'});
+  const server=createGateway({backend,token,snapshotContext,rawPrompts:process.env.WA_EXPERIMENT_RAW==='1',reasoningCue:process.env.WA_REASONING_CUE==='1',reviewAfterPass:process.env.WA_REVIEW_AFTER_PASS==='1',fewShot:process.env.WA_FEWSHOT==='1'});
   server.requestTimeout=150000;
   server.on('error',async e=>{console.error(e.message);await backend.close();process.exit(1);});
   server.listen(port,'127.0.0.1',()=>console.error(`whatsapp-code listening on http://127.0.0.1:${port}`));
