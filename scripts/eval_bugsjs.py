@@ -18,6 +18,8 @@ Manifest (JSON list, kept outside the repository):
   {"id", "group", "test_dir", "full_dir", "cmd": [...], "broader": [...],
    "task", "extra": [[...], ...] (optional, run from the scoring copy)}
 Raw transcripts and diffs stay under --out. Only aggregate tables are published.
+Set WA_EVAL_REPLY_LOG to the gateway's WA_REPLY_LOG path to record, per attempt,
+which Meta AI backend answered (metadata only).
 """
 import argparse
 import json
@@ -30,6 +32,8 @@ import signal
 import subprocess
 import tempfile
 import time
+
+from eval_coding import backends_since, reply_log_offset
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ('{task}\n\nFix the implementation in this checkout. Preserve the supplied tests, '
@@ -459,6 +463,7 @@ def main():
                 {'hasCompletedOnboarding': True, 'projects': {str(project): {'hasTrustDialogAccepted': True},
                                                               str(project.resolve()): {'hasTrustDialogAccepted': True}}}))
             log_start = args.gateway_log.stat().st_size if args.gateway_log and args.gateway_log.exists() else 0
+            replies_at = reply_log_offset()
             waited = wait_ready()
             if waited is None:
                 Path(stem + '.json').write_text(json.dumps(dict(case=case['id'], label=args.label, repeat=k,
@@ -490,12 +495,13 @@ def main():
             report = dict(case=case['id'], group=case.get('group'), label=args.label, repeat=k, mode=args.mode,
                           changed=paths, scope=scope, **run, **facts, score=judged,
                           worktree=source != project, patch_correct=bool(scope and judged.get('correct')),
-                          passed=passed, gateway=gateway_log_delta(args.gateway_log, log_start))
+                          passed=passed, gateway=gateway_log_delta(args.gateway_log, log_start),
+                          backends=backends_since(replies_at))
             Path(stem + '.json').write_text(json.dumps(report, indent=2) + '\n')
             print('result', case['id'], k, 'PASS' if passed else 'fail', run['seconds'], 's',
                   'edits', facts['edits_ok'], 'tests', facts['native_tests'], 'target', judged.get('target_pass'),
                   'parity', judged.get('parity'), 'preserve', (judged.get('preserve') or {}).get('ok'),
-                  'err', run['error'], flush=True)
+                  'err', run['error'], 'backends', report['backends'], flush=True)
             # Background sessions leave a transient Claude Code daemon tied to
             # this run's private config directory. Stop it before cleanup.
             subprocess.run(['pkill', '-f', str(holder)], capture_output=True)

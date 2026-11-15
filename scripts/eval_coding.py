@@ -108,6 +108,36 @@ def is_test_command(command):
     except ValueError:
         return False
 
+
+def reply_log_offset():
+    """Size of the gateway's private reply log (WA_EVAL_REPLY_LOG), or None."""
+    log = os.environ.get('WA_EVAL_REPLY_LOG')
+    return Path(log).stat().st_size if log and Path(log).exists() else None
+
+
+def backends_since(start):
+    """Count which Meta AI backend answered each reply logged since start.
+
+    Reads only reply metadata from the private log; no reply text is kept.
+    """
+    log = os.environ.get('WA_EVAL_REPLY_LOG')
+    if start is None or not log or not Path(log).exists():
+        return None
+    counts = {}
+    with open(log, 'rb') as handle:
+        handle.seek(start)
+        for line in handle.read().decode(errors='replace').splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get('unmatched'):
+                continue
+            meta = record.get('meta') or {}
+            name = (meta.get('infra') or {}).get('botBackend') or (meta.get('model') or {}).get('modelType') or 'unknown'
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
 def exercise(name, mode, timeout, output, tools, verify_edits=False, *, spec=None):
     spec = SCENARIOS[name] if spec is None else spec
     sources = spec.get("sources") or {spec["module"]: spec["source"]}
@@ -138,6 +168,7 @@ def exercise(name, mode, timeout, output, tools, verify_edits=False, *, spec=Non
                "--allowedTools", *allowed_tools,
                "--", spec["task"]]
     start = time.monotonic()
+    replies_at = reply_log_offset()
     timed_out = False
     try:
         print('running ' + mode + '/' + name, flush=True)
@@ -200,7 +231,7 @@ def exercise(name, mode, timeout, output, tools, verify_edits=False, *, spec=Non
             "successful_line_edits": sum(call["id"].startswith("toolu_lines_") for _, call in successful_results),
             "max_estimated_input_tokens": max(usage, default=0),
             "passed": code == 0 and not api_error and checked["visible"] and checked["held_out"] and implementation_only and instructions_kept and tested,
-            "stderr_tail": stderr[-1800:], "api_error": api_error,
+            "stderr_tail": stderr[-1800:], "api_error": api_error, "backends": backends_since(replies_at),
         }
         stem = mode + "-" + name
         (output / (stem + ".json")).write_text(json.dumps(result, indent=2) + "\n")
