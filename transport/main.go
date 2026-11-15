@@ -150,6 +150,7 @@ func main() {
 			ID      string `json:"id"`
 			Prompt  string `json:"prompt"`
 			Session string `json:"session"`
+			Caps    string `json:"caps"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &cmd); err != nil {
 			emit(map[string]any{"event": "error", "error": "Invalid command JSON"})
@@ -204,6 +205,11 @@ func main() {
 		// replies to Meta AI's CLIPPY backend, which codes far better than the
 		// LLAMA_PROD default (docs/EVALUATION.md). WA_BOT_CAPS=none turns it off.
 		caps := os.Getenv("WA_BOT_CAPS")
+		if cmd.Caps != "" {
+			// Per-message override, used by the gateway to fall back when the
+			// default backend stops answering.
+			caps = cmd.Caps
+		}
 		if caps == "" {
 			caps = "RICH_RESPONSE_UR_REASONING"
 		}

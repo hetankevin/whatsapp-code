@@ -30,7 +30,16 @@ export function botMeta(message, depth = 0) {
 }
 
 export class WhatsApp {
-  constructor({root, stateDir, timeout = 120000}) {
+  constructor({root, stateDir, timeout = 120000, quietAfter = 60000, cooldown = 20 * 60000,
+    fallback = process.env.WA_FALLBACK !== '0'}) {
+    // Meta AI's CLIPPY backend (the default) can stop answering an account
+    // for a while after heavy use. When a prompt gets no bot event at all for
+    // quietAfter ms, resend it through the standard backend and keep using
+    // that backend for the cooldown.
+    this.quietAfter = quietAfter;
+    this.cooldown = cooldown;
+    this.fallback = fallback;
+    this.standardUntil = 0;
     this.ready = false;
     this.stateDir = stateDir;
     this.timeout = timeout;
@@ -80,11 +89,12 @@ export class WhatsApp {
       else if (e.id === this.pending?.id) this.pending.reject(new GatewayError(e.error, 502));
       return;
     }
-    if (e.event !== 'message' || !this.pending) return;
+    if (e.event !== 'message') return;
     const p = this.pending;
     // Match the original sent message; never route another chat/turn into this request.
-    if (e.target !== p.id && !p.messageIds.has(e.edit_target)) return;
+    if (!p || (e.target !== p.id && !p.messageIds.has(e.edit_target))) return this.logUnmatched(e);
     p.messageIds.add(e.id);
+    clearTimeout(p.quiet);
     // A newer edit supersedes any quiet-period candidate. Explicit first
     // and inner edits are still being composed, so wait for the final event.
     clearTimeout(p.settle);
@@ -120,8 +130,18 @@ export class WhatsApp {
     if (!file || !path.isAbsolute(file)) return;
     const record = {time: new Date().toISOString(), request: p.request.requestId, attempt: p.repairCount,
       edit: edit ?? null, prompt_chars: p.prompt?.length, tools: [...(p.request.validators?.keys() ?? [])],
-      reads: p.request.editableReads, error: error?.message ?? null, meta: botMeta(message),
+      reads: p.request.editableReads, latency_ms: p.sentAt ? Date.now() - p.sentAt : null, error: error?.message ?? null, meta: botMeta(message),
       accepted: reply ? reply.content.map(b => b.type === 'tool_use' ? b.name : 'text') : null, text};
+    try { appendFileSync(file, JSON.stringify(record) + '\n', {mode: 0o600}); } catch {}
+  }
+  // Bot messages that answer no pending request (for example a notice sent
+  // on its own). Logged only with WA_REPLY_LOG; never routed to a request.
+  logUnmatched(e) {
+    const file = process.env.WA_REPLY_LOG;
+    if (!file || !path.isAbsolute(file)) return;
+    const record = {time: new Date().toISOString(), unmatched: true, edit: e.edit ?? null, target: e.target ?? null,
+      kinds: Object.keys(e.message ?? {}),
+      meta: botMeta(e.message), text: extractText(e.message, true)};
     try { appendFileSync(file, JSON.stringify(record) + '\n', {mode: 0o600}); } catch {}
   }
   repairOrReject(p) {
@@ -148,12 +168,30 @@ export class WhatsApp {
     console.error('Meta AI reply rejected; requesting one repair. ' + error.message.split('\n', 1)[0]);
     this.sendPrompt(p, repair);
   }
+  get backendStatus() {
+    return Date.now() < this.standardUntil
+      ? `standard until ${new Date(this.standardUntil).toISOString()} (default backend was not answering)` : 'default';
+  }
   sendPrompt(p, prompt) {
     p.prompt = prompt;
     p.id = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
     p.messageIds.clear();
+    p.sentAt = Date.now();
+    const standard = Date.now() < this.standardUntil;
     const {id} = p;
-    this.child.stdin.write(JSON.stringify({id, prompt, ...(p.request.sessionKey ? {session: p.request.sessionKey} : {})})+'\n', err => {
+    clearTimeout(p.quiet);
+    if (this.fallback && !standard) {
+      p.quiet = setTimeout(() => {
+        if (this.pending !== p || p.id !== id || p.messageIds.size) return;
+        this.standardUntil = Date.now() + this.cooldown;
+        console.error(`Meta AI sent nothing for ${Math.round(this.quietAfter / 1000)} s; resending through the standard backend until ${new Date(this.standardUntil).toISOString()}.`);
+        clearTimeout(p.timer);
+        p.timer = setTimeout(() => p.reject(p.lastError ?? new GatewayError('Meta AI response timed out. The WhatsApp prompt may have been sent; it was not retried.', 504)), this.timeout);
+        this.sendPrompt(p, p.prompt);
+      }, this.quietAfter);
+    }
+    const message = {id, prompt, ...(p.request.sessionKey ? {session: p.request.sessionKey} : {}), ...(standard ? {caps: 'none'} : {})};
+    this.child.stdin.write(JSON.stringify(message)+'\n', err => {
       if (err && this.pending === p && p.id === id) p.reject(err);
     });
   }
@@ -172,7 +210,7 @@ export class WhatsApp {
         this.sendPrompt(p, request.prompt);
       });
     } finally {
-      clearTimeout(p?.timer); clearTimeout(p?.settle);
+      clearTimeout(p?.timer); clearTimeout(p?.settle); clearTimeout(p?.quiet);
       signal?.removeEventListener('abort', p?.abort);
       this.pending = null;
     }

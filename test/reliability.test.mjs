@@ -1387,3 +1387,32 @@ test('requests carry a stable per-session key', () => {
   assert.equal(a, b);
   assert.notEqual(a, prepare({tools, messages: [{role: 'user', content: 'Other task.'}]}).sessionKey);
 });
+test('a silent default backend falls back to the standard backend for a cooldown', async () => {
+  const w = Object.create(WhatsApp.prototype);
+  const writes = [];
+  Object.assign(w, {ready:true, timeout:1000, quietAfter:20, cooldown:60000, fallback:true, standardUntil:0,
+    child:{stdin:{write:line => writes.push(JSON.parse(line))}}});
+  const request = prepare({messages:[{role:'user',content:'Question'}]});
+  const done = w.complete(request);
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0].caps, undefined);
+  assert.equal(writes[1].caps, 'none');
+  assert.equal(writes[1].prompt, writes[0].prompt);
+  assert.match(w.backendStatus, /^standard until/);
+  await w.event({event:'message', id:'late', target:writes[0].id, edit:'full', message:{conversation:'late answer'}});
+  await w.event({event:'message', id:'a', target:writes[1].id, edit:'full', message:{conversation:'An answer.'}});
+  assert.deepEqual((await done).content, [{type:'text', text:'An answer.'}]);
+  const next = w.complete(prepare({messages:[{role:'user',content:'Again'}]}));
+  assert.equal(writes[2].caps, 'none');
+  await w.event({event:'message', id:'b', target:writes[2].id, edit:'full', message:{conversation:'Second.'}});
+  await next;
+  w.standardUntil = 0;
+  const answered = w.complete(prepare({messages:[{role:'user',content:'Third'}]}));
+  await w.event({event:'message', id:'c', target:writes[3].id, edit:'first', message:{conversation:'Th'}});
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(writes.length, 4);
+  assert.equal(writes[3].caps, undefined);
+  await w.event({event:'message', id:'c2', target:writes[3].id, edit:'last', edit_target:'c', message:{conversation:'Third answer.'}});
+  await answered;
+});

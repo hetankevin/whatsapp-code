@@ -52,7 +52,7 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       if (a.length !== b.length || !timingSafeEqual(a,b)) throw new GatewayError('Invalid local gateway credential.',401);
       const url = new URL(req.url,'http://127.0.0.1');
       if (req.method === 'HEAD' && url.pathname === '/api/hello') {res.writeHead(200); return res.end();}
-      if (req.method === 'GET' && url.pathname === '/health') return sendJSON(200,{ready:backend.ready,status:backend.status,bot:backend.bot});
+      if (req.method === 'GET' && url.pathname === '/health') return sendJSON(200,{ready:backend.ready,status:backend.status,bot:backend.bot,backend:backend.backendStatus});
       if (req.method === 'GET' && url.pathname === '/v1/models') return sendJSON(200,{data:[{id:'meta-ai-whatsapp',type:'model',display_name:'Meta AI via WhatsApp (experimental)',created_at:'2026-11-09T00:00:00Z'}],has_more:false,first_id:'meta-ai-whatsapp',last_id:'meta-ai-whatsapp'});
       if (req.method !== 'POST' || url.pathname !== '/v1/messages') throw new GatewayError('Unknown endpoint.',404);
       if (!String(req.headers['content-type']??'').startsWith('application/json')) throw new GatewayError('Expected application/json.',415);
