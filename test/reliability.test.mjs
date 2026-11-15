@@ -1353,3 +1353,19 @@ test('the reasoning cue appears only when enabled', () => {
   assert.doesNotMatch(prepare(body).prompt, /check each requirement and edge case/);
   assert.match(prepare(body, 60000, false, undefined, {reasoningCue: true}).prompt, /check each requirement and edge case/);
 });
+
+test('an opt-in requirements review follows the first passing test after edits', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const step = (id, name, input, content, is_error = false) => [
+    {role: 'assistant', content: [{type: 'tool_use', id, name, input}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: id, content, is_error}]}];
+  const edit = id => step(id, 'Edit', {file_path: 'a.js', old_string: 'a', new_string: 'b'}, 'updated');
+  const pass = id => step(id, 'Bash', {command: 'node --test'}, '# pass 3');
+  const messages = [{role: 'user', content: 'Fix merge.'}, ...edit('e1'), ...pass('t1')];
+  const on = prepare({tools, messages}, 60000, false, undefined, {reviewAfterPass: true});
+  assert.throws(() => parseReply('Done.', on, {matchedTurn: true}), /list each requirement and edge case/);
+  assert.equal(parseReply('Checked; all handled.', on, {matchedTurn: true, finalAttempt: true}).content[0].type, 'text');
+  assert.equal(parseReply('Done.', prepare({tools, messages}), {matchedTurn: true}).content[0].type, 'text');
+  const second = prepare({tools, messages: [...messages, ...edit('e2'), ...pass('t2')]}, 60000, false, undefined, {reviewAfterPass: true});
+  assert.equal(parseReply('Done.', second, {matchedTurn: true}).content[0].type, 'text');
+});

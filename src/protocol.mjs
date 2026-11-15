@@ -679,8 +679,10 @@ function latestTaskIndex(messages) {
 
 // Native results show whether the latest command failed, or whether files
 // changed after a failed command without a later run.
-function unfinishedWork(messages) {
+function unfinishedWork(messages, reviewAfterPass = false) {
   const calls = new Map();
+  let edited = false;
+  let passesAfterEdit = 0;
   let failedCommand = false;
   let editedAfterFailure = false;
   let editedUntested = false;
@@ -695,11 +697,13 @@ function unfinishedWork(messages) {
       if (!call) continue;
       last = {name: call.name, failed: Boolean(block.is_error)};
       if (call.name === 'Bash') {
+        if (edited && !last.failed && testCommand(call)) passesAfterEdit++;
         failedCommand = last.failed;
         editedAfterFailure = false;
         const test = testCommand(call);
         if (test) lastFailedTest = last.failed ? {command: call.input.command, description: call.input.description} : undefined;
       } else if (['Edit', 'Write'].includes(call.name) && !block.is_error) {
+        edited = true;
         if (failedCommand) editedAfterFailure = true;
         else editedUntested = true;
       }
@@ -712,6 +716,11 @@ function unfinishedWork(messages) {
     return lastFailedTest ? {message, rerun: lastFailedTest} : message;
   }
   if (editedUntested) return 'Files changed and no command has run since. Run the project tests to check the change, or give a final answer that says it is untested.';
+  // Opt-in (WA_REVIEW_AFTER_PASS=1): passing tests can still miss what the task
+  // asks for. On the first pass after edits, ask once for a requirements check.
+  if (reviewAfterPass && edited && passesAfterEdit === 1 && last?.name === 'Bash' && !last.failed) {
+    return 'The test passed. Before you finish, list each requirement and edge case the task states and check the current code against each one. If any is not handled, fix it and run the test again; otherwise give your final answer.';
+  }
 }
 
 function latestToolStatus(messages, configuredCommand) {
@@ -1227,7 +1236,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   }
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
-    ? unfinishedWork(taskMessages) : undefined;
+    ? unfinishedWork(taskMessages, Boolean(editOptions.reviewAfterPass)) : undefined;
   // The last test command run in this task, and whether the workspace
   // changed after it (a successful Edit or Write).
   let lastTest, changedSinceTest = false;
