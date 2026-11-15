@@ -1103,6 +1103,11 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
             choice.type === 'tool' ? 'Use the required tool ' + choice.name + '.' :
               'When your next step is to search, read, edit, or test, request the corresponding tool now.'
         ] : []),
+        // Opt-in experiment (WA_REASONING_CUE=1 on the server): a prompt-level
+        // cue to reason about requirements before editing.
+        ...(editOptions.reasoningCue && tools.length && choice.type !== 'none' ? [
+          'Before you edit, check each requirement and edge case the task states or implies (empty and boundary inputs, nested or repeated cases, values that must not change) against the code, and make your change satisfy all of them, not only the failing test.'
+        ] : []),
         'CURRENT REQUEST:',
         JSON.stringify(payload)
       ].join('\n');

@@ -1346,3 +1346,10 @@ test('an unclosed replacement block before END and a later envelope is closed by
   const reply = 'FILE: module.js\n' + fence + '\nreturn "old";\n' + fence + '\n' + fence + '\nreturn "new";\nEND\n{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
   assert.equal(parseReply(reply, request, {matchedTurn: true}).content[0].input.new_string, 'const a = 1;\n  return "new";\n}');
 });
+
+test('the reasoning cue appears only when enabled', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const body = {tools, messages: [{role: 'user', content: 'Fix it.'}]};
+  assert.doesNotMatch(prepare(body).prompt, /check each requirement and edge case/);
+  assert.match(prepare(body, 60000, false, undefined, {reasoningCue: true}).prompt, /check each requirement and edge case/);
+});
