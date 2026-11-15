@@ -167,14 +167,32 @@ func main() {
 		}
 		c, cancel := context.WithTimeout(ctx, 40*time.Second)
 		msg := &waE2E.Message{Conversation: proto.String(cmd.Prompt)}
-		// Opt-in experiment: ask the bot for its "think hard" mode. Whether the
-		// account and bot honor it shows up only in reply metadata.
+		// Opt-in experiments. Whether the bot honors them is measured, not assumed.
+		meta := &waAICommon.BotMetadata{}
+		used := false
 		if os.Getenv("WA_BOT_MODE") == "think_hard" {
-			msg.MessageContextInfo = &waE2E.MessageContextInfo{BotMetadata: &waAICommon.BotMetadata{
-				BotModeSelectionMetadata: &waAICommon.BotModeSelectionMetadata{
-					Mode: []waAICommon.BotModeSelectionMetadata_BotUserSelectionMode{waAICommon.BotModeSelectionMetadata_THINK_HARD_MODE},
-				},
+			meta.BotModeSelectionMetadata = &waAICommon.BotModeSelectionMetadata{
+				Mode: []waAICommon.BotModeSelectionMetadata_BotUserSelectionMode{waAICommon.BotModeSelectionMetadata_THINK_HARD_MODE},
+			}
+			used = true
+		}
+		// A separate conversation for each message, so earlier chat history
+		// cannot steer the reply.
+		if os.Getenv("WA_BOT_SESSION") == "random" {
+			meta.SessionMetadata = &waAICommon.BotSessionMetadata{
+				SessionID:     proto.String(cmd.ID),
+				SessionSource: waAICommon.BotSessionSource_USER_INPUT.Enum(),
+			}
+			used = true
+		}
+		if os.Getenv("WA_BOT_THREAD") == "incognito" {
+			meta.BotThreadInfo = &waAICommon.AIThreadInfo{ClientInfo: &waAICommon.AIThreadInfo_AIThreadClientInfo{
+				Type: waAICommon.AIThreadInfo_AIThreadClientInfo_INCOGNITO.Enum(),
 			}}
+			used = true
+		}
+		if used {
+			msg.MessageContextInfo = &waE2E.MessageContextInfo{BotMetadata: meta}
 		}
 		_, err := cli.SendMessage(c, bot, msg, whatsmeow.SendRequestExtra{ID: cmd.ID})
 		cancel()
