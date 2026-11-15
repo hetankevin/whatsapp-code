@@ -184,7 +184,7 @@ test('inputs unchanged', () => { const t = {a: {x: 1}}; deepMerge(t, {a: {y: 2},
 ''',
         'judge': '''const {deepMerge} = await import(MODULE);
 assert.deepEqual(deepMerge({a: [1, 2]}, {a: [3]}), {a: [3]});
-const s = {deep: {list: [1]}}; const r = deepMerge({deep: {k: 1}}, s); r.deep.list.push(2); assert.deepEqual(s.deep.list, [1]);
+const s = {deep: {list: [1]}}; const before = JSON.stringify(s); deepMerge({deep: {k: 1}}, s); assert.equal(JSON.stringify(s), before);
 assert.deepEqual(deepMerge({a: {b: {c: 1, d: 2}}}, {a: {b: {d: 3}}}), {a: {b: {c: 1, d: 3}}});
 assert.deepEqual(deepMerge({a: 1}, {a: null}), {a: null});
 assert.deepEqual(deepMerge({a: {x: 1}}, {a: 5}), {a: 5});
