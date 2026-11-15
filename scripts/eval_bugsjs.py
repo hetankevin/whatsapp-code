@@ -143,7 +143,14 @@ def analyse(events, cmd):
 
 
 def wait_ready(limit=600):
-    """Wait for the paired gateway to report WhatsApp ready. Returns seconds waited or None."""
+    """Wait for the paired gateway to report WhatsApp ready. Returns seconds waited or None.
+
+    With WA_EVAL_DEFAULT_BACKEND=1, also wait (up to an hour) while the gateway
+    has fallen back to the standard backend, so attempts start on the default.
+    """
+    backend = os.environ.get('WA_EVAL_DEFAULT_BACKEND') == '1'
+    if backend:
+        limit = max(limit, 3600)
     import urllib.request
     state = Path(os.environ.get('WA_STATE_DIR') or Path.home() / 'Library/Application Support/whatsapp-code')
     token = (state / 'gateway-token').read_text().strip()
@@ -153,7 +160,8 @@ def wait_ready(limit=600):
     while time.time() - begin < limit:
         try:
             request = urllib.request.Request(f'http://127.0.0.1:{port}/health', headers={'x-api-key': token})
-            if json.loads(opener.open(request, timeout=5).read()).get('ready'):
+            health = json.loads(opener.open(request, timeout=5).read())
+            if health.get('ready') and not (backend and health.get('backend', 'default') != 'default'):
                 return round(time.time() - begin, 1)
         except Exception:
             pass
@@ -419,6 +427,7 @@ def main():
     parser.add_argument('--label', required=True)
     parser.add_argument('--cases', nargs='*')
     parser.add_argument('--repeat', type=int, default=1)
+    parser.add_argument('--pause', type=int, default=0, help='seconds to wait after each attempt (pacing)')
     parser.add_argument('--mode', choices=['print', 'bg', 'tty'], default='print')
     parser.add_argument('--budget', type=int, default=300)
     parser.add_argument('--max-turns', type=int, default=40)
@@ -506,6 +515,7 @@ def main():
             # this run's private config directory. Stop it before cleanup.
             subprocess.run(['pkill', '-f', str(holder)], capture_output=True)
             shutil.rmtree(holder, ignore_errors=True)
+            time.sleep(args.pause)
 
 
 if __name__ == '__main__':

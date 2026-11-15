@@ -9,6 +9,7 @@ Reference fixes are used only by --validate to check each task; the model never
 sees them.
 """
 import argparse
+import time
 import json
 from pathlib import Path
 import subprocess
@@ -296,6 +297,7 @@ def main():
     parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--timeout', type=int, default=300)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--pause', type=int, default=0, help='seconds to wait after each task (pacing)')
     args = parser.parse_args()
     if args.validate:
         sys.exit(0 if validate() else 1)
@@ -308,6 +310,7 @@ def main():
                 continue
             spec = {key: value for key, value in TASKS[name].items() if key != 'reference'}
             ec.exercise(name, 'compact', args.timeout, out, 'Read,Edit,Write,Glob,Grep,Bash', spec=spec)
+            time.sleep(args.pause)
 
 
 if __name__ == '__main__':
