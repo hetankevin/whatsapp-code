@@ -140,6 +140,12 @@ Scorer correction: the original deep-merge judge also required that the result s
 
 Before the outage, O also had a first round of 3/6. Across the matched default arms (O, cue off, review off) the pass rate is 29 of 48, about 60 percent. Per task in the review comparison (off / on): Roman numerals 4/4 and 4/4, LRU 4/4 and 4/4, deep merge 2/4 and 2/4, word wrap 3/4 and 1/4, intervals 2/4 and 1/4, semver 0/4 and 2/4. No variant changed the overall rate beyond noise; all three stay off by default. The remaining failures are patches that pass the visible tests but miss stated edge cases (semver prerelease ordering, touching intervals, arrays replaced rather than merged).
 
+### Chat history and session isolation
+
+All requests share one WhatsApp chat with Meta AI. A code-word probe through the raw path showed that, by default, Meta AI answers with words from earlier messages rather than the latest one: chat history leaks into replies, unreliably. Sending each message as its own bot session (`WA_BOT_SESSION=random`, transport d81136e) removed that: it answered "NONE" in all five trials. An incognito thread type did not isolate.
+
+Isolation made coding worse. On the middle tier, A-B-B-A twice (24 runs per arm): the shared chat produced 17 correct patches and 15 end-to-end passes, and ran the test after its last edit in 20 runs; isolated sessions produced 12 correct patches, 0 end-to-end passes, and never ran a test. The long chat history, full of earlier exchanges that read, edited, and tested, was teaching Meta AI the workflow. **The numbers in this report were measured on a heavily used chat; a fresh install with an empty Meta AI chat is likely to perform worse.**
+
 ### Long session, native compaction, and resume
 
 The two-module task (fix TTL and implement CSV in one session) at the default client window compacted natively once and twice, was resumed with `--resume` for a follow-up turn, and kept working for 6.5 and 8 minutes (13 edits each, 4 and 20 native test runs). Neither final patch was correct and both ended on an undecodable reply. Native compaction also occurred on its own in 9 dev and holdout sessions. Runs with a client window below the default thrashed: Claude Code's compaction buffer leaves almost no room, so smaller windows are not a useful way to force compaction.
