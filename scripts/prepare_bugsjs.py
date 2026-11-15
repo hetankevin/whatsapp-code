@@ -35,8 +35,21 @@ MOCHA = {
 def run(cmd, cwd):
     done = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=300)
     out = re.sub(r'\x1b\[[0-9;]*m', '', done.stdout + done.stderr)
-    titles = sorted(set(re.findall(r'^\s*\d+\) ([^\n]+)', out, re.M)))
-    return done.returncode, titles
+    # Mocha prints nested suite titles on indented continuation lines and ends
+    # the full title with a colon: '1) suite' / 'nested' / 'test title:'.
+    titles = set()
+    lines = out.split("\n")  # not splitlines(): titles may contain U+2028
+    for i, line in enumerate(lines):
+        match = re.match(r'^(\s*)\d+\) (.+)$', line)
+        if not match:
+            continue
+        parts, j = [match.group(2).strip()], i + 1
+        while not parts[-1].endswith(':') and j < len(lines) and lines[j].strip() and \
+                len(lines[j]) - len(lines[j].lstrip()) > len(match.group(1)):
+            parts.append(lines[j].strip())
+            j += 1
+        titles.add(' '.join(parts))
+    return done.returncode, sorted(titles)
 
 
 def main():
