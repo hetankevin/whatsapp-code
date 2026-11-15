@@ -28,6 +28,9 @@ def layer(report):
     # eval_coding.py stores test output in 'error' and the API error in 'api_error'.
     error = (report.get('api_error') if 'scenario' in report else report.get('error')) or ''
     final = report.get('final') or ''
+    # Part of the session ran on the standard backend after CLIPPY went quiet.
+    if any(name != 'CLIPPY' for name in (report.get('backends') or {})):
+        return 'fallback'
     if report.get('timed_out'):
         return 'timeout'
     if 'after eight edit attempts' in error or 'after eight edit attempts' in final:
