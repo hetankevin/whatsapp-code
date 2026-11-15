@@ -147,8 +147,9 @@ func main() {
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	for scanner.Scan() {
 		var cmd struct {
-			ID     string `json:"id"`
-			Prompt string `json:"prompt"`
+			ID      string `json:"id"`
+			Prompt  string `json:"prompt"`
+			Session string `json:"session"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &cmd); err != nil {
 			emit(map[string]any{"event": "error", "error": "Invalid command JSON"})
@@ -178,9 +179,18 @@ func main() {
 		}
 		// A separate conversation for each message, so earlier chat history
 		// cannot steer the reply.
-		if os.Getenv("WA_BOT_SESSION") == "random" {
+		session := ""
+		switch os.Getenv("WA_BOT_SESSION") {
+		case "random":
+			session = cmd.ID
+		case "task":
+			// One bot session per Claude Code session: a clean start for each
+			// task, with the task's own dialogue kept.
+			session = cmd.Session
+		}
+		if session != "" {
 			meta.SessionMetadata = &waAICommon.BotSessionMetadata{
-				SessionID:     proto.String(cmd.ID),
+				SessionID:     proto.String(session),
 				SessionSource: waAICommon.BotSessionSource_USER_INPUT.Enum(),
 			}
 			used = true

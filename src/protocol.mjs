@@ -1284,7 +1284,14 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   const lastAssistant = [...transcript].reverse().find(message => message.role === 'assistant' && Array.isArray(message.content));
   const contextReadOf = new Set((lastAssistant?.content ?? []).filter(block => block.type === 'tool_use' &&
     block.id?.startsWith('toolu_ctx_') && typeof block.input?.file_path === 'string').map(block => block.input.file_path));
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles, contextReadOf,
+  // A stable key per Claude Code session, for optional per-task bot sessions.
+  let sessionKey;
+  try { sessionKey = JSON.parse(body.metadata?.user_id ?? '{}').session_id; } catch {}
+  if (typeof sessionKey !== 'string' || !/^[\w-]{8,64}$/.test(sessionKey)) {
+    const first = transcript.find(message => message.role === 'user');
+    sessionKey = createHash('sha256').update(JSON.stringify(first?.content ?? '')).digest('hex').slice(0, 32);
+  }
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
     lastTest, changedSinceTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
     unfinishedVerification, useVerificationContext, textOnly};

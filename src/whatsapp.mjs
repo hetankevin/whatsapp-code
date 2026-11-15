@@ -153,7 +153,7 @@ export class WhatsApp {
     p.id = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
     p.messageIds.clear();
     const {id} = p;
-    this.child.stdin.write(JSON.stringify({id,prompt})+'\n', err => {
+    this.child.stdin.write(JSON.stringify({id, prompt, ...(p.request.sessionKey ? {session: p.request.sessionKey} : {})})+'\n', err => {
       if (err && this.pending === p && p.id === id) p.reject(err);
     });
   }

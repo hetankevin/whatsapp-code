@@ -1377,3 +1377,13 @@ test('the worked example appears only when enabled and only for coding requests'
   assert.match(prepare(body, 60000, false, undefined, {fewShot: true}).prompt, /Example of a complete exchange[\s\S]*EDIT READ_ID 2 2/);
   assert.doesNotMatch(prepare({messages: body.messages}, 60000, false, undefined, {fewShot: true}).prompt, /Example of a complete exchange/);
 });
+
+test('requests carry a stable per-session key', () => {
+  const tools = ['Read', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const meta = {user_id: JSON.stringify({device_id: 'd', session_id: '45900cca-aa00-4d97-8306-9b5a0a5b9f1a'})};
+  assert.equal(prepare({tools, metadata: meta, messages: [{role: 'user', content: 'Fix it.'}]}).sessionKey, '45900cca-aa00-4d97-8306-9b5a0a5b9f1a');
+  const a = prepare({tools, messages: [{role: 'user', content: 'Fix it.'}]}).sessionKey;
+  const b = prepare({tools, messages: [{role: 'user', content: 'Fix it.'}, {role: 'assistant', content: 'ok'}, {role: 'user', content: 'more'}]}).sessionKey;
+  assert.equal(a, b);
+  assert.notEqual(a, prepare({tools, messages: [{role: 'user', content: 'Other task.'}]}).sessionKey);
+});
