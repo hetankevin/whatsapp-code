@@ -146,6 +146,8 @@ All requests share one WhatsApp chat with Meta AI. A code-word probe through the
 
 Isolation made coding worse. On the middle tier, A-B-B-A twice (24 runs per arm): the shared chat produced 17 correct patches and 15 end-to-end passes, and ran the test after its last edit in 20 runs; isolated sessions produced 12 correct patches, 0 end-to-end passes, and never ran a test. The long chat history, full of earlier exchanges that read, edited, and tested, was teaching Meta AI the workflow. **The numbers in this report were measured on a heavily used chat; a fresh install with an empty Meta AI chat is likely to perform worse.**
 
+Adding one complete worked exchange to the prompt (`WA_FEWSHOT=1`, f4c53a6) did not replace that history. Isolated sessions with the example against the shared chat, A-B-B-A twice: 8 versus 17 correct patches, 0 versus 16 end-to-end passes, and a test after the last edit in 1 versus 22 runs. The shared chat stays the default; both options stay off.
+
 ### Long session, native compaction, and resume
 
 The two-module task (fix TTL and implement CSV in one session) at the default client window compacted natively once and twice, was resumed with `--resume` for a follow-up turn, and kept working for 6.5 and 8 minutes (13 edits each, 4 and 20 native test runs). Neither final patch was correct and both ended on an undecodable reply. Native compaction also occurred on its own in 9 dev and holdout sessions. Runs with a client window below the default thrashed: Claude Code's compaction buffer leaves almost no room, so smaller windows are not a useful way to force compaction.
