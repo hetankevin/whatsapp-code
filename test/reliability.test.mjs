@@ -1416,3 +1416,11 @@ test('a silent default backend falls back to the standard backend for a cooldown
   await w.event({event:'message', id:'c2', target:writes[3].id, edit:'last', edit_target:'c', message:{conversation:'Third answer.'}});
   await answered;
 });
+test('an EDIT header that keeps the READ_ID label is the same frame', () => {
+  const request = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:'7\tfunction f() {\n8\treturn "old";\n9\t}'});
+  const id = request.editableReads[0].read_id;
+  const plain = parseReply('EDIT ' + id + ' 8 8\nreturn "new";\nEND', request, {matchedTurn:true}).content[0];
+  const labelled = parseReply('EDIT READ_ID ' + id + ' 8 8\nreturn "new";\nEND', request, {matchedTurn:true}).content[0];
+  assert.deepEqual(labelled.input, plain.input);
+  assert.equal(labelled.name, 'Edit');
+});

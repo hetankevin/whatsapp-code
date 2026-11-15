@@ -291,3 +291,12 @@ test('back-to-back envelopes become parallel read-only calls, otherwise the firs
  assert.deepEqual(parseReply(write, r, {matchedTurn:true}).content.map(b => b.name), ['Read']);
  assert.throws(() => parseReply(read + grep, r), /match/);
 });
+test('parallel Reads share the read budget', () => {
+ const tools = [{name:'Read',description:'Read',input_schema:{type:'object',properties:{file_path:{type:'string'},offset:{type:'integer'},limit:{type:'integer'}},required:['file_path'],additionalProperties:false}},
+  {name:'Edit',description:'Edit',input_schema:{type:'object',properties:{file_path:{type:'string'},old_string:{type:'string'},new_string:{type:'string'}},required:['file_path','old_string','new_string'],additionalProperties:false}}];
+ const r = prepare({model:'meta-ai-whatsapp',max_tokens:1024,messages:[{role:'user',content:'Fix the bug'}],tools});
+ const read = file => '{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"' + file + '"}}]}';
+ assert.deepEqual(parseReply(read('a.js'), r, {matchedTurn:true}).content.map(b => b.input.limit), [400]);
+ assert.deepEqual(parseReply(read('a.js') + read('b.js'), r, {matchedTurn:true}).content.map(b => b.input.limit), [200, 200]);
+ assert.deepEqual(parseReply(read('a.js') + read('b.js') + read('c.js') + read('d.js'), r, {matchedTurn:true}).content.map(b => b.input.limit), [120, 120, 120, 120]);
+});

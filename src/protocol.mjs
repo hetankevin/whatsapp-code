@@ -1554,7 +1554,9 @@ function parseSearchReplace(text, request, finalAttempt) {
 }
 
 export function parseReply(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
-  const original = raw.trim();
+  // The frame template reads EDIT READ_ID START END_LINE. A reply that keeps
+  // the READ_ID label before the real id and range means the same frame.
+  const original = raw.trim().replace(/^([ \t]*EDIT)[ \t]+READ_ID[ \t]*[:=]?[ \t]+(?=\S+[ \t]+\d+[ \t]+\d+[ \t]*$)/gm, '$1 ');
   const fence = /^(\x60{3,})(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i.exec(original);
   // A repeated END after a complete frame carries no source. Keep the first.
   let unwrapped = fence ? fence[2].trim() : original;
@@ -1689,6 +1691,10 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   if (hasLineEdit && obj.content.filter(b => b?.type === 'tool_use').length !== 1) {
     throw repairableError('Send one EditLines call without other tools.');
   }
+  // Parallel Reads in one reply share the usual 400-line budget, so their
+  // outputs together fit the WhatsApp view of the next request.
+  const readCount = obj.content.filter(b => b?.type === 'tool_use' && b.name === 'Read').length;
+  const readCap = readCount > 1 ? Math.max(120, Math.floor(400 / readCount)) : 400;
   const blocks = obj.content.map(b => {
     if (b?.type === 'text' && typeof b.text === 'string') {
       if (!b.text.trim()) throw repairableError('Meta AI returned a blank text reply.');
@@ -1760,8 +1766,8 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       if (Number.isSafeInteger(shaped.limit) && shaped.limit < 40 && Number.isSafeInteger(shaped.offset)) {
         shaped.offset = Math.max(1, shaped.offset - 10);
         shaped.limit = 40;
-      } else if (!Number.isSafeInteger(shaped.limit) || shaped.limit > 400) {
-        shaped.limit = 400;
+      } else if (!Number.isSafeInteger(shaped.limit) || shaped.limit > readCap) {
+        shaped.limit = readCap;
       }
       if (validate(shaped)) input = shaped;
     }
