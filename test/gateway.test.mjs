@@ -272,3 +272,22 @@ test('raw experiment prompts pass through only when enabled', async () => {
     server.close();
   }
 });
+test('back-to-back envelopes become parallel read-only calls, otherwise the first call', () => {
+ const schema = props => ({type:'object',properties:props,required:Object.keys(props).slice(0,1),additionalProperties:false});
+ const tools = [{name:'Read',description:'Read',input_schema:schema({file_path:{type:'string'}})},
+  {name:'Grep',description:'Grep',input_schema:schema({pattern:{type:'string'},path:{type:'string'}})},
+  {name:'Bash',description:'Bash',input_schema:schema({command:{type:'string'}})}];
+ const r = prepare({model:'meta-ai-whatsapp',max_tokens:1024,messages:[{role:'user',content:'Find the bug'}],tools});
+ const read = '{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/a.js"}}]}';
+ const grep = '{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"x|y","path":"test/a.js"}}]}';
+ const both = parseReply(read + grep.slice(0, -2), r, {matchedTurn:true});
+ assert.deepEqual(both.content.map(b => [b.type, b.name]), [['tool_use','Read'],['tool_use','Grep']]);
+ assert.notEqual(both.content[0].id, both.content[1].id);
+ const bash = '{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}';
+ assert.deepEqual(parseReply(read + '\n' + bash, r, {matchedTurn:true}).content.map(b => b.name), ['Read']);
+ assert.throws(() => parseReply(read + ' then ' + grep, r, {matchedTurn:true}), /protocol JSON/);
+ assert.deepEqual(parseReply(read.slice(0, -2) + grep, r, {matchedTurn:true}).content.map(b => b.name), ['Read','Grep']);
+ const write = '{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"{\\"content\\":["}}]}';
+ assert.deepEqual(parseReply(write, r, {matchedTurn:true}).content.map(b => b.name), ['Read']);
+ assert.throws(() => parseReply(read + grep, r), /match/);
+});

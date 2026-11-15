@@ -195,6 +195,50 @@ function parseJSON(text) {
   }
 }
 
+// Meta AI can request several tools by sending one envelope after another.
+// Read-only calls are merged into one reply, which Claude Code runs as
+// parallel tool calls. Otherwise only the first envelope is kept, so a later
+// action sees the result of the earlier one first.
+const readOnlyTools = new Set(['Read', 'Grep', 'Glob']);
+function concatenatedEnvelopes(text) {
+  if (!text.startsWith('{')) return;
+  const parts = [];
+  let depth = 0, quoted = false, start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '\\') i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"') quoted = true;
+    else if (c === '{' || c === '[') {
+      // A new envelope inside an open one: the earlier one lost its closers.
+      if (depth && c === '{' && /^\{\s*"content"\s*:\s*\[/.test(text.slice(i, i + 32))) {
+        parts.push(text.slice(start, i));
+        depth = 0;
+      }
+      if (!depth) start = i;
+      depth++;
+    } else if (c === '}' || c === ']') {
+      if (--depth < 0) return;
+      if (!depth) parts.push(text.slice(start, i + 1));
+    } else if (!depth && c.trim()) return;
+  }
+  if (depth) parts.push(text.slice(start));
+  if (parts.length < 2) return;
+  const objects = [];
+  for (const part of parts) {
+    let obj;
+    try { obj = parseJSON(part); } catch { return; }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || !Array.isArray(obj.content)) return;
+    objects.push(obj);
+  }
+  const ids = new Set(objects.filter(obj => Object.hasOwn(obj, 'request_id')).map(obj => obj.request_id));
+  if (ids.size > 1) return;
+  const all = objects.flatMap(obj => obj.content);
+  const content = all.every(block => block?.type === 'tool_use' && readOnlyTools.has(block.name)) ? all : objects[0].content;
+  return ids.size ? {request_id: [...ids][0], content} : {content};
+}
+
 const lineEditInputSchema = {
   type: 'object',
   properties: {
@@ -1552,7 +1596,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   }
   let obj;
   try {
-    try { obj = parseJSON(trimmed); }
+    try { obj = concatenatedEnvelopes(trimmed) ?? parseJSON(trimmed); }
     catch {
       if ((request.editFiles || request.useVerificationContext) &&
           (/^REPLACE[ \t]/.test(trimmed) || /^(?:FILE[ \t]|\x60{3,}(?!json\b))/i.test(original))) {
