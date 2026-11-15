@@ -112,7 +112,9 @@ def is_test_command(command):
 def reply_log_offset():
     """Size of the gateway's private reply log (WA_EVAL_REPLY_LOG), or None."""
     log = os.environ.get('WA_EVAL_REPLY_LOG')
-    return Path(log).stat().st_size if log and Path(log).exists() else None
+    if not log:
+        return None
+    return Path(log).stat().st_size if Path(log).exists() else 0
 
 
 def backends_since(start):
