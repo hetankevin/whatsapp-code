@@ -8,7 +8,8 @@ Input: a JSON list of cases, for example
 Repositories come from https://github.com/BugsJS/<repo>. Each case gets the
 Bug-N-test tag (buggy source with the upstream regression tests) and the
 Bug-N-full tag (upstream fix), dependencies installed with
-`npm install --ignore-scripts --no-package-lock`, and a preflight that the
+`npm install --ignore-scripts --no-package-lock --legacy-peer-deps` (these projects
+predate npm 7's peer-dependency enforcement), and a preflight that the
 target command fails on the buggy revision and passes on the fixed one.
 
 The task text is derived only from the failing test titles:
@@ -62,7 +63,7 @@ def main():
                 archive.unlink()
             dirs[rev] = target
         if not (dirs['test'] / 'node_modules').exists():
-            subprocess.run(['npm', 'install', '--ignore-scripts', '--no-package-lock', '--no-audit', '--no-fund',
+            subprocess.run(['npm', 'install', '--ignore-scripts', '--no-package-lock', '--no-audit', '--no-fund', '--legacy-peer-deps',
                             '--loglevel', 'error'], cwd=dirs['test'], check=True)
         if not (dirs['full'] / 'node_modules').exists():
             (dirs['full'] / 'node_modules').symlink_to(dirs['test'] / 'node_modules', target_is_directory=True)
