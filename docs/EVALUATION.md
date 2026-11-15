@@ -126,6 +126,18 @@ The passing attempt read the response module, made one edit inside its native ba
 | N | 2/2 | 0/2 |
 | O (final) | 0/2 (1 correct, untested) | 0/2 |
 
+### Middle tier: small realistic bug fixes (`scripts/eval_midtier.py`)
+
+Six self-contained modules, each with one or two real bugs (Roman numerals in the 400s and 900s, semantic-version ordering, LRU recency and capacity, non-mutating deep merge, word wrap, interval merging), visible tests that fail, and a held-out judge with further edge cases. Each task was validated: the buggy source fails the visible tests and a reference fix passes everything. Same pass criteria as the TTL and CSV tasks.
+
+| Gateway | Rounds | End-to-end passes |
+|---|---|---|
+| O (71ed115) | round 1, before the outage | 2/6 (plus 1 correct patch cut off by a refusal) |
+| O | rounds 2 and 3 (A-B-B-A) | 7/12 |
+| P (519a86c): rerun the model's own test after each edit | rounds 1 and 2 (A-B-B-A) | 7/12 |
+
+Per task across the four matched rounds: LRU 4/4, Roman numerals 4/4, word wrap 2/4, intervals 2/4, semver 1/4, deep merge 0/4. The failures are mostly patches that pass the visible tests but miss edge cases the task states (nested copies in deep merge, prerelease ordering in semver). Rerunning the test after every edit made no difference here, because sessions on these tasks already tested after their last edit; it stays on branch p-rev.
+
 ### Long session, native compaction, and resume
 
 The two-module task (fix TTL and implement CSV in one session) at the default client window compacted natively once and twice, was resumed with `--resume` for a follow-up turn, and kept working for 6.5 and 8 minutes (13 edits each, 4 and 20 native test runs). Neither final patch was correct and both ended on an undecodable reply. Native compaction also occurred on its own in 9 dev and holdout sessions. Runs with a client window below the default thrashed: Claude Code's compaction buffer leaves almost no room, so smaller windows are not a useful way to force compaction.
