@@ -334,7 +334,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                 events=events, session=session, error=error, final=final[:300])
 
 
-SCORER_REVISION = 7
+SCORER_REVISION = 8
 
 
 
@@ -396,6 +396,10 @@ def score(case, pre, patch, out_stem, reference=None):
         if applied.returncode:
             return {'applied': False, 'error': applied.stderr[-300:], 'scorer': SCORER_REVISION}
         target = run_cmd(project, case['cmd'], Path(out_stem + '-score-target.log'))
+        if target.get('code') != 0:  # a failing target must fail again to count
+            again = run_cmd(project, case['cmd'], Path(out_stem + '-score-target2.log'))
+            if again.get('code') == 0:
+                target = {**again, 'flaky_first_run': target.get('failure_titles', [])}
         broader = run_cmd(project, case['broader'], Path(out_stem + '-score-broader.log'))
         known = set(pre['full']['broader']['failure_titles'])
         new_failures = set(broader.get('failure_titles', [])) - known
