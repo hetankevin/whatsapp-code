@@ -131,7 +131,8 @@ export class WhatsApp {
     p.lastError = null;
     let reply;
     try {
-      if (text.trim() === 'There was a problem generating a response. Please try again later.') {
+      // Meta AI's own error messages are not answers: retry the prompt once.
+      if (/^(?:There was a problem generating a response\. Please try again later|Something went wrong\. Please try again)\.?$/.test(text.trim())) {
         const error = new GatewayError('WhatsApp Meta AI could not generate a response. Please retry.', 503);
         error.generationFailure = true;
         throw error;

@@ -30,7 +30,8 @@ def layer(report):
     error = (report.get('api_error') if 'scenario' in report else report.get('error')) or ''
     final = report.get('final') or ''
     # Part of the session ran on the standard backend after CLIPPY went quiet.
-    if any(name != 'CLIPPY' for name in (report.get('backends') or {})):
+    # Unlabeled replies are Meta AI's own error messages, not the standard backend.
+    if any(name not in ('CLIPPY', 'unknown') for name in (report.get('backends') or {})):
         return 'fallback'
     if report.get('timed_out'):
         return 'timeout'

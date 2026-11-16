@@ -610,7 +610,8 @@ def main():
             # this run's private config directory. Stop it before cleanup.
             subprocess.run(['pkill', '-f', str(holder)], capture_output=True)
             shutil.rmtree(holder, ignore_errors=True)
-            if args.require_clippy and set(report['backends'] or {'none': 1}) != {'CLIPPY'}:
+            backends = report['backends'] or {}
+            if args.require_clippy and ('CLIPPY' not in backends or set(backends) - {'CLIPPY', 'unknown'}):
                 print('STOP: attempt', case['id'], k, 'was not answered only by CLIPPY:', report['backends'], flush=True)
                 sys.exit(3)
             time.sleep(args.pause)

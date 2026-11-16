@@ -67,6 +67,11 @@ test('a Meta AI generation failure retries the current prompt just once', async 
   assert.match(f.rejected.message, /WhatsApp Meta AI could not generate a response/);
   assert.equal(f.writes.length, 1);
 
+  const other = transportFixture();
+  await other.w.event({event:'message',id:'failed',target:'original',edit:'full',message:{conversation:'Something went wrong. Please try again.'}});
+  assert.equal(other.writes.length, 1, 'the generic Meta AI error is retried, not returned as an answer');
+  assert.equal(other.resolved, undefined);
+
   const recovered = transportFixture();
   await recovered.w.event({event:'message',id:'failed',target:'original',edit:'full',message:{conversation:failure}});
   await recovered.w.event({event:'message',id:'success',target:recovered.writes[0].id,
