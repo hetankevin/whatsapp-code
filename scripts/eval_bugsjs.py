@@ -30,6 +30,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -481,6 +482,26 @@ def rescore(cases, out, labels):
                 print('rescore', label, path.name, 'PASS' if passed else 'fail', 'correct', correct, flush=True)
 
 
+def clippy_answers():
+    """Send one short prompt through the launcher and report whether CLIPPY answered it."""
+    start = reply_log_offset()
+    with tempfile.TemporaryDirectory(prefix='wa-eval-probe-') as scratch:
+        subprocess.run(['node', str(Path(__file__).resolve().parent.parent / 'src/launch.mjs'), '-p', 'Reply with hello.'],
+                       cwd=scratch, stdin=subprocess.DEVNULL, capture_output=True, timeout=400)
+    return 'CLIPPY' in (backends_since(start) or {})
+
+
+def wait_for_clippy(limit=26 * 3600):
+    """Wait (probing every 15 minutes) until CLIPPY answers. Returns seconds waited or None."""
+    begin = time.time()
+    while time.time() - begin < limit:
+        if wait_ready() is not None and clippy_answers():
+            return round(time.time() - begin)
+        print('CLIPPY not answering; next probe in 15 minutes', time.strftime('%H:%M:%S'), flush=True)
+        time.sleep(900)
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--manifest', type=Path, required=True)
@@ -497,7 +518,12 @@ def main():
     parser.add_argument('--context-tokens', type=int, help='client context window, to force native compaction')
     parser.add_argument('--rescore', nargs='*', help='re-judge saved runs under these labels, then exit')
     parser.add_argument('--configured-test', action='store_true', help='set WA_TEST_COMMAND to the case command (configured, not default)')
+    parser.add_argument('--require-clippy', action='store_true',
+                        help='start each attempt only after CLIPPY answers a probe, and stop the batch when an attempt '
+                             'gets any other backend, so sealed cases are not spent on the standard backend')
     args = parser.parse_args()
+    if args.require_clippy and not os.environ.get('WA_EVAL_REPLY_LOG'):
+        parser.error('--require-clippy needs WA_EVAL_REPLY_LOG to see which backend answered')
     global CONTEXT_TOKENS, CONFIGURED_TEST
     CONTEXT_TOKENS = args.context_tokens
     CONFIGURED_TEST = args.configured_test
@@ -541,6 +567,13 @@ def main():
                     blocked='gateway not ready for 600 s', passed=False)) + '\n')
                 print('blocked', case['id'], k, 'gateway not ready', flush=True)
                 continue
+            if args.require_clippy:
+                clippy_wait = wait_for_clippy()
+                if clippy_wait is None:
+                    print('STOP: CLIPPY did not answer for 26 hours', flush=True)
+                    sys.exit(3)
+                waited += clippy_wait
+                replies_at = reply_log_offset()
             print('running', args.label, case['id'], k, args.mode, 'waited', waited, 'quota wait', quota_wait, flush=True)
             run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, args.resume_prompt)
             facts = analyse(run.pop('events'), case['cmd'])
@@ -577,6 +610,9 @@ def main():
             # this run's private config directory. Stop it before cleanup.
             subprocess.run(['pkill', '-f', str(holder)], capture_output=True)
             shutil.rmtree(holder, ignore_errors=True)
+            if args.require_clippy and set(report['backends'] or {'none': 1}) != {'CLIPPY'}:
+                print('STOP: attempt', case['id'], k, 'was not answered only by CLIPPY:', report['backends'], flush=True)
+                sys.exit(3)
             time.sleep(args.pause)
 
 
