@@ -151,7 +151,7 @@ Failures on CLIPPY, by cause:
 | Two-module task with `--resume` follow-up | 2/2 (33 and 48 s; finished before any compaction) |
 | Six-module long session with compaction and resume | not yet run (waiting for CLIPPY) |
 | Plain Q&A | 6/6, including the `[[1,[2]],3].flat()` question every LLAMA_PROD batch got wrong |
-| Fresh clone: `npm ci`, launcher, live reply | works (Q); to be repeated on the final revision |
+| Fresh clone: `npm ci`, launcher, live reply | works: a new clone from GitHub at the final revision installs with `npm ci`, builds the Go transport from source, passes all 94 unit tests, and its launcher gets a live reply (3 s) |
 
 ### CLIPPY's usage limit and the fallback
 
