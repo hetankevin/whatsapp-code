@@ -84,14 +84,34 @@ export class WhatsApp {
     }
     if (e.event === 'ready') {
       this.ready = true; this.status = 'ready'; this.bot = e.bot;
+      const p = this.pending;
+      if (p?.awaitingReconnect) {
+        p.awaitingReconnect = false; p.resentAfterReconnect = true;
+        console.error('WhatsApp reconnected; sending the interrupted prompt again.');
+        this.sendPrompt(p, p.prompt);
+      }
       await this.pairingPage('<h1>WhatsApp connected</h1><p>You can close this page and start whatsapp-code.</p>');
-      console.error(`WhatsApp ready (${e.bot}).`);
+      console.error(`WhatsApp ready (${e.bot}).` + (this.disconnectedAt ? ` Reconnected after ${((Date.now() - this.disconnectedAt) / 1000).toFixed(1)} s.` : ''));
+      this.disconnectedAt = 0;
       return;
     }
-    if (['fatal','disconnected','logged_out'].includes(e.event)) return this.fail(e.error ?? e.event);
+    if (e.event === 'disconnected') {
+      // The transport reconnects by itself, and WhatsApp delivers a reply to
+      // a prompt sent before the drop once it is back. Keep the pending
+      // request (its timeout still applies) instead of ending the session.
+      this.ready = false; this.status = 'disconnected; reconnecting'; this.disconnectedAt = Date.now();
+      console.error(`WhatsApp disconnected at ${new Date().toISOString()}; waiting for the transport to reconnect.`);
+      return;
+    }
+    if (['fatal','logged_out'].includes(e.event)) return this.fail(e.error ?? e.event);
     if (e.event === 'error') {
       if (!e.id) this.fail(e.error);
-      else if (e.id === this.pending?.id) this.pending.reject(new GatewayError(e.error, 502));
+      else if (e.id === this.pending?.id) {
+        // A send attempted while disconnected never left this device: send it
+        // again once the transport is back.
+        if (!this.ready && !this.pending.resentAfterReconnect) this.pending.awaitingReconnect = true;
+        else this.pending.reject(new GatewayError(e.error, 502));
+      }
       return;
     }
     if (e.event !== 'message') return;
@@ -174,6 +194,12 @@ export class WhatsApp {
     console.error('Meta AI reply rejected; requesting one repair. ' + error.message.split('\n', 1)[0]);
     this.sendPrompt(p, repair);
   }
+  async waitReady(ms = 30000) {
+    // Only a transient disconnect is worth waiting for.
+    const end = Date.now() + ms;
+    while (!this.ready && this.status.startsWith('disconnected') && Date.now() < end) await new Promise(r => setTimeout(r, 250));
+    return this.ready;
+  }
   get backendStatus() {
     return Date.now() < this.standardUntil
       ? `standard until ${new Date(this.standardUntil).toISOString()} (default backend was not answering)` : 'default';
@@ -188,15 +214,18 @@ export class WhatsApp {
     const {id} = p;
     clearTimeout(p.quiet);
     if (this.fallback && !standard) {
-      p.quiet = setTimeout(() => {
+      const quiet = () => {
         if (this.pending !== p || p.id !== id || p.messageIds.size) return;
+        // Silence during a disconnect says nothing about the backend.
+        if (!this.ready || p.awaitingReconnect) { p.quiet = setTimeout(quiet, this.quietAfter); return; }
         this.silences += 1;
         this.standardUntil = Date.now() + Math.min(this.maxCooldown, this.cooldown * 2 ** (this.silences - 1));
         console.error(`Meta AI sent nothing for ${Math.round(this.quietAfter / 1000)} s; resending through the standard backend until ${new Date(this.standardUntil).toISOString()}.`);
         clearTimeout(p.timer);
         p.timer = setTimeout(() => p.reject(p.lastError ?? new GatewayError('Meta AI response timed out. The WhatsApp prompt may have been sent; it was not retried.', 504)), this.timeout);
         this.sendPrompt(p, p.prompt);
-      }, this.quietAfter);
+      };
+      p.quiet = setTimeout(quiet, this.quietAfter);
     }
     const message = {id, prompt, ...(p.request.sessionKey ? {session: p.request.sessionKey} : {}), ...(standard ? {caps: 'none'} : {})};
     this.child.stdin.write(JSON.stringify(message)+'\n', err => {

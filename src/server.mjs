@@ -131,7 +131,7 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
         : requestClass && requestClass !== 'main'
           ? prepare(body, maxChars)
           : prepare(body, maxChars, snapshotContext, editFiles, {...editOptions, ...(reasoningCue ? {reasoningCue} : {}), ...(reviewAfterPass ? {reviewAfterPass} : {}), ...(fewShot ? {fewShot} : {})});
-      if (!request.localResult && !backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
+      if (!request.localResult && !backend.ready && !(await backend.waitReady?.())) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
       const controller = new AbortController();
       if (res.destroyed) return;
       res.once('close', () => {if(!res.writableEnded) controller.abort();});
@@ -146,7 +146,7 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
         await acquire(controller.signal);
         locked = true;
         if (controller.signal.aborted || res.destroyed) throw cancelled();
-        if (!backend.ready) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
+        if (!backend.ready && !(await backend.waitReady?.())) throw new GatewayError(`WhatsApp unavailable: ${backend.status}`,503);
         result = await backend.complete(request,controller.signal);
       }
       if (body.stream) {streamMessage(result,send); res.end();}

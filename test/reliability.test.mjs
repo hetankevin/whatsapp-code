@@ -1447,6 +1447,40 @@ test('each silence in a row doubles the fallback cooldown; a default-backend rep
   await w.event({event:'message', id:'e', target:writes.at(-1).id, edit:'full', message:{conversation:'Standard.'}});
   await again;
 });
+test('a WhatsApp disconnect does not end the pending request; an interrupted send is resent after reconnecting', async () => {
+  const w = Object.create(WhatsApp.prototype);
+  const writes = [];
+  Object.assign(w, {ready:true, status:'ready', timeout:2000, quietAfter:30, cooldown:60000, maxCooldown:60000, silences:0, fallback:true, standardUntil:0,
+    pairingPage: async () => {}, child:{stdin:{write:line => writes.push(JSON.parse(line))}}});
+  // Disconnect after the prompt left: the reply arrives after the reconnect.
+  const first = w.complete(prepare({messages:[{role:'user',content:'One'}]}));
+  await w.event({event:'disconnected'});
+  assert.equal(w.ready, false);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(writes.length, 1, 'no fallback resend while disconnected');
+  await w.event({event:'ready', bot:'bot'});
+  await w.event({event:'message', id:'a', target:writes[0].id, edit:'full', message:{conversation:'After reconnect.'}});
+  assert.deepEqual((await first).content, [{type:'text', text:'After reconnect.'}]);
+  assert.equal(w.silences, 0);
+  // The send itself failed because the transport was down: resend once after ready.
+  w.quietAfter = 1500;
+  const second = w.complete(prepare({messages:[{role:'user',content:'Two'}]}));
+  await w.event({event:'disconnected'});
+  await w.event({event:'error', id:writes[1].id, error:'WhatsApp is not ready'});
+  const waiting = w.waitReady(2000);
+  await w.event({event:'ready', bot:'bot'});
+  assert.equal(await waiting, true);
+  assert.equal(writes.length, 3);
+  assert.equal(writes[2].prompt, writes[1].prompt);
+  assert.notEqual(writes[2].id, writes[1].id);
+  await w.event({event:'message', id:'b', target:writes[2].id, edit:'full', message:{conversation:'Resent.'}});
+  assert.deepEqual((await second).content, [{type:'text', text:'Resent.'}]);
+  // A logout still ends the request.
+  const third = w.complete(prepare({messages:[{role:'user',content:'Three'}]}));
+  await w.event({event:'logged_out'});
+  await assert.rejects(third, /logged_out/);
+  assert.equal(await w.waitReady(50), false);
+});
 test('an EDIT header that keeps the READ_ID label is the same frame', () => {
   const request = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:'7\tfunction f() {\n8\treturn "old";\n9\t}'});
   const id = request.editableReads[0].read_id;
