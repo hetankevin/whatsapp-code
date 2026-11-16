@@ -164,7 +164,9 @@ def wait_for_quota():
                     record = json.loads(line)
                 except ValueError:
                     continue
-                if ((record.get('meta') or {}).get('infra') or {}).get('botBackend') != 'CLIPPY':
+                # Count every reply to a default-backend request (CLIPPY replies,
+                # refusals, unlabeled replies); only the standard backend is free.
+                if record.get('unmatched') or ((record.get('meta') or {}).get('model') or {}).get('modelType') == 'LLAMA_PROD':
                     continue
                 at = datetime.datetime.fromisoformat(record['time'].replace('Z', '+00:00'))
                 if (now - at).total_seconds() < 3600:
