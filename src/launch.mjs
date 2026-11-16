@@ -83,6 +83,10 @@ if (editFiles.length) {
 args.push('--append-system-prompt', await loadProjectContext());
 args.push(...harness.args);
 console.error('whatsapp-code: prompts and tool results go to Meta AI through your linked WhatsApp account. Experimental. The gateway queues overlapping requests.');
+if(health.standardUntil){
+ const until=new Date(health.standardUntil).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+ console.error(`whatsapp-code: Meta AI's reasoning backend is not answering this account (usually its usage limit). Until about ${until}, replies come from the standard backend, which codes much worse. Small tasks still work; consider waiting for larger ones.`);
+}
 const child=spawn('claude',args,{env,stdio:'inherit'});
 child.on('error',e=>{console.error(e.message);process.exit(1);});
 child.on('exit',(code,signal)=>{if(signal)process.kill(process.pid,signal);else process.exit(code??1);});

@@ -31,13 +31,18 @@ export function botMeta(message, depth = 0) {
 
 export class WhatsApp {
   constructor({root, stateDir, timeout = 120000, quietAfter = 60000, cooldown = 20 * 60000,
-    fallback = process.env.WA_FALLBACK !== '0'}) {
+    maxCooldown = 4 * 3600000, fallback = process.env.WA_FALLBACK !== '0'}) {
     // Meta AI's CLIPPY backend (the default) can stop answering an account
-    // for a while after heavy use. When a prompt gets no bot event at all for
+    // for a while after heavy use: under an hour after a burst, several hours
+    // after a heavy day. When a prompt gets no bot event at all for
     // quietAfter ms, resend it through the standard backend and keep using
-    // that backend for the cooldown.
+    // that backend for the cooldown. Each further silence in a row doubles
+    // the cooldown (up to maxCooldown), so a long outage costs a few waits
+    // rather than one every cooldown; any default-backend reply resets it.
     this.quietAfter = quietAfter;
     this.cooldown = cooldown;
+    this.maxCooldown = maxCooldown;
+    this.silences = 0;
     this.fallback = fallback;
     this.standardUntil = 0;
     this.ready = false;
@@ -95,6 +100,7 @@ export class WhatsApp {
     if (!p || (e.target !== p.id && !p.messageIds.has(e.edit_target))) return this.logUnmatched(e);
     p.messageIds.add(e.id);
     clearTimeout(p.quiet);
+    if (!p.standard) this.silences = 0;
     // A newer edit supersedes any quiet-period candidate. Explicit first
     // and inner edits are still being composed, so wait for the final event.
     clearTimeout(p.settle);
@@ -178,12 +184,14 @@ export class WhatsApp {
     p.messageIds.clear();
     p.sentAt = Date.now();
     const standard = Date.now() < this.standardUntil;
+    p.standard = standard;
     const {id} = p;
     clearTimeout(p.quiet);
     if (this.fallback && !standard) {
       p.quiet = setTimeout(() => {
         if (this.pending !== p || p.id !== id || p.messageIds.size) return;
-        this.standardUntil = Date.now() + this.cooldown;
+        this.silences += 1;
+        this.standardUntil = Date.now() + Math.min(this.maxCooldown, this.cooldown * 2 ** (this.silences - 1));
         console.error(`Meta AI sent nothing for ${Math.round(this.quietAfter / 1000)} s; resending through the standard backend until ${new Date(this.standardUntil).toISOString()}.`);
         clearTimeout(p.timer);
         p.timer = setTimeout(() => p.reject(p.lastError ?? new GatewayError('Meta AI response timed out. The WhatsApp prompt may have been sent; it was not retried.', 504)), this.timeout);

@@ -1390,7 +1390,7 @@ test('requests carry a stable per-session key', () => {
 test('a silent default backend falls back to the standard backend for a cooldown', async () => {
   const w = Object.create(WhatsApp.prototype);
   const writes = [];
-  Object.assign(w, {ready:true, timeout:1000, quietAfter:20, cooldown:60000, fallback:true, standardUntil:0,
+  Object.assign(w, {ready:true, timeout:1000, quietAfter:20, cooldown:60000, maxCooldown:4 * 60000, silences:0, fallback:true, standardUntil:0,
     child:{stdin:{write:line => writes.push(JSON.parse(line))}}});
   const request = prepare({messages:[{role:'user',content:'Question'}]});
   const done = w.complete(request);
@@ -1415,6 +1415,37 @@ test('a silent default backend falls back to the standard backend for a cooldown
   assert.equal(writes[3].caps, undefined);
   await w.event({event:'message', id:'c2', target:writes[3].id, edit:'last', edit_target:'c', message:{conversation:'Third answer.'}});
   await answered;
+});
+test('each silence in a row doubles the fallback cooldown; a default-backend reply resets it', async () => {
+  const w = Object.create(WhatsApp.prototype);
+  const writes = [];
+  Object.assign(w, {ready:true, timeout:1000, quietAfter:20, cooldown:60000, maxCooldown:3 * 60000, silences:0, fallback:true, standardUntil:0,
+    child:{stdin:{write:line => writes.push(JSON.parse(line))}}});
+  const cooldowns = [];
+  for (const text of ['One', 'Two', 'Three']) {
+    w.standardUntil = 0;
+    const done = w.complete(prepare({messages:[{role:'user',content:text}]}));
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const before = Date.now();
+    cooldowns.push(Math.round((w.standardUntil - before) / 60000));
+    const last = writes.at(-1);
+    assert.equal(last.caps, 'none');
+    await w.event({event:'message', id:'s' + text, target:last.id, edit:'full', message:{conversation:'Standard.'}});
+    await done;
+  }
+  // 1, 2, then capped at 3 minutes; standard-backend replies do not reset the count.
+  assert.deepEqual(cooldowns, [1, 2, 3]);
+  w.standardUntil = 0;
+  const answered = w.complete(prepare({messages:[{role:'user',content:'Back'}]}));
+  assert.equal(writes.at(-1).caps, undefined);
+  await w.event({event:'message', id:'d', target:writes.at(-1).id, edit:'full', message:{conversation:'Default.'}});
+  await answered;
+  assert.equal(w.silences, 0);
+  const again = w.complete(prepare({messages:[{role:'user',content:'Quiet again'}]}));
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(Math.round((w.standardUntil - Date.now()) / 60000), 1);
+  await w.event({event:'message', id:'e', target:writes.at(-1).id, edit:'full', message:{conversation:'Standard.'}});
+  await again;
 });
 test('an EDIT header that keeps the READ_ID label is the same frame', () => {
   const request = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:'7\tfunction f() {\n8\treturn "old";\n9\t}'});
