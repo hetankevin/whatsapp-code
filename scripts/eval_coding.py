@@ -150,9 +150,12 @@ def wait_for_quota():
     import time
     import glob
     budget = int(os.environ.get('WA_EVAL_CLIPPY_PER_HOUR') or 0)
+    # CLIPPY also stops for most of a day once about 830 replies fall in the
+    # past 24 hours (November 16); WA_EVAL_CLIPPY_PER_DAY keeps runs below that.
+    daily = int(os.environ.get('WA_EVAL_CLIPPY_PER_DAY') or 0)
     # The quota is per account: count every reply log (WA_EVAL_QUOTA_LOGS glob).
     pattern = os.environ.get('WA_EVAL_QUOTA_LOGS') or os.environ.get('WA_EVAL_REPLY_LOG')
-    if not budget or not pattern:
+    if not (budget or daily) or not pattern:
         return 0
     begin = time.time()
     while True:
@@ -169,12 +172,19 @@ def wait_for_quota():
                 if record.get('unmatched') or ((record.get('meta') or {}).get('model') or {}).get('modelType') == 'LLAMA_PROD':
                     continue
                 at = datetime.datetime.fromisoformat(record['time'].replace('Z', '+00:00'))
-                if (now - at).total_seconds() < 3600:
+                if (now - at).total_seconds() < (86400 if daily else 3600):
                     recent.append(at)
-        if len(recent) < budget:
+        hour = [at for at in recent if (now - at).total_seconds() < 3600]
+        over_hour = budget and len(hour) >= budget
+        over_day = daily and len(recent) >= daily
+        if not over_hour and not over_day:
             return round(time.time() - begin)
-        oldest = min(recent)
-        time.sleep(max(30, 3600 - (now - oldest).total_seconds() + 5))
+        if over_day:
+            # Wait until enough of the past day's replies age out.
+            edge = sorted(recent)[len(recent) - daily]
+            time.sleep(max(30, 86400 - (now - edge).total_seconds() + 5))
+        else:
+            time.sleep(max(30, 3600 - (now - min(hour)).total_seconds() + 5))
 
 def exercise(name, mode, timeout, output, tools, verify_edits=False, *, spec=None):
     spec = SCENARIOS[name] if spec is None else spec
