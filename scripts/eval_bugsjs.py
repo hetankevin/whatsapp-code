@@ -334,8 +334,33 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                 events=events, session=session, error=error, final=final[:300])
 
 
-SCORER_REVISION = 6
+SCORER_REVISION = 7
 
+
+
+def isolated_failures(case, out_stem):
+    """Titles that fail on the fixed revision when each test file under the
+    preservation paths runs alone. Cached per case next to the results."""
+    cache = Path(out_stem).parent.parent / f"isolated-v{SCORER_REVISION}-{case['id']}.json"
+    if cache.exists():
+        return set(json.loads(cache.read_text()))
+    paths = [a for a in case['preserve'] if not a.startswith(('-', 'node_modules')) and a.endswith(('/', '.js'))]
+    runner = [a for a in case['preserve'] if a not in paths]
+    titles = set()
+    with tempfile.TemporaryDirectory(prefix='wa-eval-alone-') as tmp:
+        fixed = Path(tmp) / 'full'
+        copy_tree(Path(case['full_dir']), fixed)
+        if not (fixed / 'node_modules').exists():
+            (fixed / 'node_modules').symlink_to(Path(case['test_dir']) / 'node_modules')
+        files = []
+        for rel in paths:
+            target = fixed / rel
+            files += sorted(target.glob('*.js')) if target.is_dir() else [target]
+        for i, file in enumerate(files):
+            result = run_cmd(fixed, runner + [str(file.relative_to(fixed))], Path(tmp) / f'alone{i}.log')
+            titles.update(result.get('failure_titles', []))
+    write_atomic(cache, json.dumps(sorted(titles), indent=1) + '\n')
+    return titles
 
 def reference_failures(case, out, runs=3):
     """Per-title failure counts over repeated runs of the FIXED revision only.
@@ -374,12 +399,14 @@ def score(case, pre, patch, out_stem, reference=None):
         broader = run_cmd(project, case['broader'], Path(out_stem + '-score-broader.log'))
         known = set(pre['full']['broader']['failure_titles'])
         new_failures = set(broader.get('failure_titles', [])) - known
+        passing = broader.get('passing', 0)
         if new_failures:  # confirm before counting a regression
             again = run_cmd(project, case['broader'], Path(out_stem + '-score-broader2.log'))
             new_failures &= set(again.get('failure_titles', []))
+            passing = max(passing, again.get('passing', 0))
         new_failures = sorted(new_failures)
         parity = (broader.get('code') is not None and not new_failures and
-                  broader.get('passing', 0) >= pre['full']['broader']['passing'] - len(known))
+                  passing >= pre['full']['broader']['passing'] - len(known))
         preserve = None
         if reference is not None:
             # A regression must fail in every candidate run and in at most one
@@ -408,6 +435,13 @@ def score(case, pre, patch, out_stem, reference=None):
                             now[t] = now.get(t, 0) + 1
                 unscored += [t for t in regressions if now.get(t, 0) > 1]
                 regressions = [t for t in regressions if now.get(t, 0) <= 1]
+            if regressions:
+                # A test that also fails on the fixed revision when its own file
+                # runs alone is an environment failure; whether it shows up in
+                # the whole suite depends on order, not on the candidate.
+                alone = isolated_failures(case, out_stem)
+                unscored += [t for t in regressions if t in alone]
+                regressions = [t for t in regressions if t not in alone]
             preserve = {'ok': first.get('code') is not None and not regressions and first.get('passing', 0) > 0,
                         'passing': first.get('passing'), 'failing': first.get('failing'),
                         'new_failures': regressions[:10], 'flaky_unscored': unscored[:10]}
