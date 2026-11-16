@@ -1286,10 +1286,17 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     return prompt;
   };
   let prompt = build();
+  // Claude Code decides when to compact from the usage it is sent. Report the
+  // size of its whole transcript, not the trimmed WhatsApp view, so its own
+  // accounting (and so native compaction) follows what it actually holds.
+  const fullChars = prompt.length;
+  // Native compaction requests carry the whole transcript. Trim their
+  // WhatsApp view the same way rather than refusing them.
+  const trimmable = (!textOnly || Boolean(editOptions.compactionSummary)) && !editFiles && !useSnapshot && !useVerificationContext;
   // After a native compaction, Claude Code re-attaches files read earlier as
   // system-reminder text in the latest message. They duplicate files the model
   // can read again, so they leave the WhatsApp view first when it is too long.
-  if (prompt.length > maxChars && !textOnly && !editFiles && !useSnapshot && !useVerificationContext) {
+  if (prompt.length > maxChars && trimmable) {
     const reattached = messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
       .filter(block => block.type === 'text' && typeof block.text === 'string' && block.text.length > 400 &&
         block.text.startsWith('<system-reminder>\nResult of calling the Read tool:'));
@@ -1304,7 +1311,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   // Claude Code owns the transcript and its compaction. If the WhatsApp view
   // still exceeds the limit, omit the oldest tool outputs from that view only.
   // The task, the latest exchange, and excerpts still being edited stay.
-  if (prompt.length > maxChars && !textOnly && !editFiles && !useSnapshot && !useVerificationContext) {
+  if (prompt.length > maxChars && trimmable) {
     const keep = new Set([taskIndex, messages.length - 1, messages.length - 2]);
     const omittable = [];
     messages.forEach((message, index) => {
@@ -1329,7 +1336,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   // One huge search or command output in the latest exchange can still
   // exceed the limit. Keep the start and end of the largest such outputs in
   // the WhatsApp view, with a note. Read outputs stay whole: edits use them.
-  if (prompt.length > maxChars && !textOnly && !editFiles && !useSnapshot && !useVerificationContext) {
+  if (prompt.length > maxChars && trimmable) {
     const names = new Map();
     for (const message of messages) {
       if (Array.isArray(message.content)) for (const block of message.content) if (block.type === 'tool_use') names.set(block.id, block.name);
@@ -1392,7 +1399,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   }
   return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
     lastTest, changedSinceTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
-    validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars,
+    validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars, fullChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
 
@@ -1623,7 +1630,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     : unwrapped;
   if (!trimmed) throw repairableError('Meta AI returned no content.');
   // Consumer WhatsApp supplies no tokenizer counts. These are estimates, not billing data.
-  const usage = {input_tokens: Math.ceil(request.prompt.length / 4), output_tokens: Math.ceil(raw.length / 4)};
+  const usage = {input_tokens: Math.ceil((request.fullChars ?? request.prompt.length) / 4), output_tokens: Math.ceil(raw.length / 4)};
   if (request.textOnly) {
     if (!matchedTurn) throw staleRequestError('Meta AI reply does not match this request.');
     return assistantMessage(request.model, [{type: 'text', text: original}], usage);

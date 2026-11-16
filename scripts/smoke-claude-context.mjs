@@ -16,7 +16,7 @@ await mkdir(sources);
 await writeFile(path.join(state, 'gateway-token'), 'test-key');
 await writeFile(path.join(dir, 'CLAUDE.md'), 'Keep the fixture repository instructions in context.');
 for (let i = 0; i < 24; i++) {
-  const source = Array.from({length: 70}, (_, line) => 'Example source fixture ' + i + ' line ' + line + ' for context tests.');
+  const source = Array.from({length: 200}, (_, line) => 'Example source fixture ' + i + ' line ' + line + ' for context tests.');
   if (i === 0) source[0] += ' fixtureNeedle';
   await writeFile(path.join(sources, 'fragment-' + i + '.txt'), source.join('\n') + '\n');
 }
@@ -63,7 +63,7 @@ const server = createGateway({
       if (!readCount) assert.match(request.prompt, /fragment-0\.txt/);
       if (readCount < 24) {
         const file_path = path.join(sources, 'fragment-' + readCount++ + '.txt');
-        return tool('Read', {file_path, limit: 24});
+        return tool('Read', {file_path, limit: 200});
       }
       return reply({type: 'text', text: 'context-ok'});
     }
@@ -88,7 +88,7 @@ try {
   let stdout = '', stderr = '';
   child.stdout.on('data', chunk => {stdout += chunk;});
   child.stderr.on('data', chunk => {stderr += chunk;});
-  const timer = setTimeout(() => child.kill('SIGTERM'), 45000);
+  const timer = setTimeout(() => child.kill('SIGTERM'), 90000);
   const [code] = await once(child, 'exit');
   clearTimeout(timer);
   const events = stdout.trim().split('\n').map(line => JSON.parse(line));
@@ -123,7 +123,8 @@ try {
   }
   assert.ok(succeeded.has('Glob') && succeeded.has('Grep'));
   assert.ok(broadened, 'Claude Code should execute the literal Grep and return its match');
-  assert.ok(compactions >= 2 && resumed >= 2);
+  assert.ok(compactions >= 2 && resumed >= 2, `compactions ${compactions}, resumed ${resumed}`);
+  assert.doesNotMatch(stdout, /Autocompact is thrashing/);
   console.log('PASS: Claude Code used native Glob and Grep and completed 24 reads across ' + compactions + ' native compactions.');
 } finally {
   server.closeAllConnections();

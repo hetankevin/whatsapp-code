@@ -335,6 +335,27 @@ test('compaction requests ask for a summary that fits through WhatsApp', () => {
  assert.match(prepare(body, 60000, false, undefined, {compactionSummary:true}).prompt, /under 6,000 characters/);
  assert.doesNotMatch(prepare(body).prompt, /under 6,000 characters/);
 });
+test('a long compaction request is trimmed for WhatsApp, and usage reports the whole transcript', () => {
+ const out = n => Array.from({length: 300}, (_, i) => `${i + 1}\tconst value${n}_${i} = compute(${i}); // keep this line long enough`).join('\n');
+ const messages = [{role:'user',content:'Fix lib/m0.js so the tests pass.'}];
+ for (let n = 0; n < 8; n++) {
+  messages.push({role:'assistant',content:[{type:'tool_use',id:'toolu_' + n,name:'Read',input:{file_path:'lib/m' + n + '.js'}}]});
+  messages.push({role:'user',content:[{type:'tool_result',tool_use_id:'toolu_' + n,content:out(n)}]});
+ }
+ messages.push({role:'user',content:'Your task is to create a detailed summary of the conversation so far.'});
+ const body = {model:'meta-ai-whatsapp',max_tokens:1024,messages,tools:[],tool_choice:{type:'none'}};
+ const r = prepare(body, 60000, false, undefined, {compactionSummary:true});
+ assert.ok(r.prompt.length <= 60000);
+ assert.ok(r.fullChars > 100000);
+ assert.match(r.prompt, /Earlier tool output omitted to fit the WhatsApp limit/);
+ assert.match(r.prompt, /const value7_299 = compute/);
+ assert.match(r.prompt, /under 6,000 characters/);
+ const reply = parseReply('<summary>Task: fix lib/m0.js.</summary>', r, {matchedTurn:true});
+ assert.equal(reply.usage.input_tokens, Math.ceil(r.fullChars / 4));
+ // Short auxiliary text requests are untouched.
+ const small = prepare({model:'meta-ai-whatsapp',max_tokens:64,messages:[{role:'user',content:'Title?'}],tools:[],tool_choice:{type:'none'}});
+ assert.equal(small.fullChars, small.prompt.length);
+});
 test('an answer that claims the offered tools are unavailable gets one repair', () => {
  const tools = [{name:'Read',description:'Read',input_schema:{type:'object',properties:{file_path:{type:'string'}},required:['file_path'],additionalProperties:false}}];
  const r = prepare({model:'meta-ai-whatsapp',max_tokens:1024,messages:[{role:'user',content:'Fix the failing test'}],tools});

@@ -61,7 +61,7 @@ The device database, gateway token, and pairing page stay in local application s
 ## Limits
 
 - The gateway sends one request to WhatsApp at a time and queues overlapping requests in arrival order. Streaming requests receive keepalives while they wait.
-- The normal launcher uses Claude Code's native compaction. It defaults to a 26,000-token client window and a 2,048-token output setting to leave room for the compaction request. The gateway sends that request to Meta AI as text. Each WhatsApp prompt still has a 60,000-character cap, so large individual reads or tool outputs can exceed it.
+- The normal launcher uses Claude Code's native compaction. It defaults to a 50,000-token client window and a 2,048-token output setting; smaller windows compact again within a few reads after each compaction and stop. The gateway reports the size of Claude Code's whole transcript as usage, so Claude Code compacts on its own accounting, and sends the compaction request to Meta AI as text. Each WhatsApp prompt has a 60,000-character cap: for longer transcripts (compaction requests included) the gateway leaves out re-attached file contents and then the oldest tool outputs from the WhatsApp view only, with a note, and shortens one huge search or command output if needed.
 - Recognized Claude Code background notification checks fall back to Claude Code’s local status heuristic. The gateway keeps those requests out of WhatsApp.
 - Existing Meta AI chat history is not reset or deleted. Prompt instructions cannot guarantee isolation from Meta AI's existing memory.
 - Text and ordinary client tools only. Unsupported media, server tools, extended thinking, and structured-output API settings are rejected.

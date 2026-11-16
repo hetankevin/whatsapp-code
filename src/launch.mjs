@@ -49,8 +49,14 @@ if (process.env.WA_TEST_COMMAND) {
 }
 if (headers.length) env.ANTHROPIC_CUSTOM_HEADERS = headers.join('\n');
 if (!editFiles.length) {
- // Leave space for Claude Code's own compaction request below the WhatsApp cap.
- env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ??= '26000';
+ // Claude Code compacts about 15,000 tokens below this window, and a
+ // compacted session restarts at 7,000-17,000 tokens (summary, kept turns,
+ // re-attached files). At 26,000 that left room for two reads, so sessions
+ // compacted again and again until Claude Code stopped them ("Autocompact is
+ // thrashing"). 50,000 leaves room for six or more 400-line reads. The gateway
+ // trims the WhatsApp view of longer transcripts, compaction requests
+ // included, to the 60,000-character cap.
+ env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ??= '50000';
  env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ??= '2048';
 }
 env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = '1';
