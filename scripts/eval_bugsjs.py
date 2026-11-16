@@ -334,7 +334,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                 events=events, session=session, error=error, final=final[:300])
 
 
-SCORER_REVISION = 5
+SCORER_REVISION = 6
 
 
 def reference_failures(case, out, runs=3):
@@ -394,6 +394,20 @@ def score(case, pre, patch, out_stem, reference=None):
                     seen[t] += t in again
             regressions = sorted(t for t, n in seen.items() if n == runs and counts.get(t, 0) <= 1)
             unscored = sorted(t for t, n in seen.items() if n == runs and counts.get(t, 0) > 1)
+            if regressions:
+                # Confirm against the fixed revision now, under the same machine
+                # load: a title that also fails there more than once is flaky.
+                now = {}
+                with tempfile.TemporaryDirectory(prefix='wa-eval-refnow-') as tmp:
+                    fixed = Path(tmp) / 'full'
+                    copy_tree(Path(case['full_dir']), fixed)
+                    if not (fixed / 'node_modules').exists():
+                        (fixed / 'node_modules').symlink_to(Path(case['test_dir']) / 'node_modules')
+                    for i in range(runs):
+                        for t in run_cmd(fixed, case['preserve'], Path(out_stem + f'-score-refnow{i + 1}.log')).get('failure_titles', []):
+                            now[t] = now.get(t, 0) + 1
+                unscored += [t for t in regressions if now.get(t, 0) > 1]
+                regressions = [t for t in regressions if now.get(t, 0) <= 1]
             preserve = {'ok': first.get('code') is not None and not regressions and first.get('passing', 0) > 0,
                         'passing': first.get('passing'), 'failing': first.get('failing'),
                         'new_failures': regressions[:10], 'flaky_unscored': unscored[:10]}
