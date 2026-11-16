@@ -59,6 +59,13 @@ def init_git(project):
         subprocess.run(['git', *args], cwd=project, check=True)
 
 
+
+def write_atomic(path, text):
+    """Write a cache file so a concurrent reader never sees it half written."""
+    temp = path.with_name(path.name + f'.{os.getpid()}.tmp')
+    temp.write_text(text)
+    os.replace(temp, path)
+
 def run_cmd(project, cmd, log, timeout=120):
     try:
         with log.open('w') as out:
@@ -94,7 +101,7 @@ def preflight(case, out):
             result[rev] = {'target': run_cmd(project, case['cmd'], out / f"pre-{case['id']}-{rev}-target.log"),
                            'broader': run_cmd(project, case['broader'], out / f"pre-{case['id']}-{rev}-broader.log")}
     result['valid'] = result['test']['target']['code'] not in (0, None) and result['full']['target']['code'] == 0
-    cache.write_text(json.dumps(result, indent=2) + '\n')
+    write_atomic(cache, json.dumps(result, indent=2) + '\n')
     return result
 
 
@@ -351,7 +358,7 @@ def reference_failures(case, out, runs=3):
                 counts[title] = counts.get(title, 0) + 1
             passing.append(result.get('passing', 0))
     reference = {'counts': counts, 'min_passing': min(passing), 'max_passing': max(passing), 'runs': runs}
-    cache.write_text(json.dumps(reference, indent=2) + '\n')
+    write_atomic(cache, json.dumps(reference, indent=2) + '\n')
     return reference
 
 
