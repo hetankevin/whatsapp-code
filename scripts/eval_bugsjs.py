@@ -65,7 +65,9 @@ def run_cmd(project, cmd, log, timeout=120):
             child = subprocess.run(cmd, cwd=project, stdout=out, stderr=out, timeout=timeout)
     except subprocess.TimeoutExpired:
         return {'code': None, 'timeout': True}
-    data = log.read_text(errors='replace')
+    # Mocha can prefix failure lines with ANSI resets even when writing to a
+    # file. Strip them, or failing titles (and regressions) go unseen.
+    data = re.sub(r'\x1b\[[0-9;]*m', '', log.read_text(errors='replace'))
     count = lambda word: int((re.findall(r'(\d+) ' + word, data) or ['0'])[-1])
     if re.search(r'^# (pass|fail) \d+', data, re.M):  # node --test TAP output
         tap = lambda word: int((re.findall(r'^# ' + word + r' (\d+)', data, re.M) or ['0'])[-1])
@@ -76,7 +78,7 @@ def run_cmd(project, cmd, log, timeout=120):
 
 
 def preflight(case, out):
-    cache = out / f"preflight-{case['id']}.json"
+    cache = out / (f"preflight-{case['id']}.json" if SCORER_REVISION < 5 else f"preflight-v{SCORER_REVISION}-{case['id']}.json")
     if cache.exists():
         return json.loads(cache.read_text())
     for key in ('test_dir', 'full_dir'):
@@ -325,7 +327,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                 events=events, session=session, error=error, final=final[:300])
 
 
-SCORER_REVISION = 4
+SCORER_REVISION = 5
 
 
 def reference_failures(case, out, runs=3):
@@ -334,7 +336,7 @@ def reference_failures(case, out, runs=3):
     pass separately."""
     if not case.get('preserve'):
         return None
-    cache = out / f"reference3-{case['id']}.json"
+    cache = out / (f"reference3-{case['id']}.json" if SCORER_REVISION < 5 else f"reference3-v{SCORER_REVISION}-{case['id']}.json")
     if cache.exists():
         return json.loads(cache.read_text())
     counts, passing = {}, []

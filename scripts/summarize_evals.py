@@ -19,6 +19,7 @@ diffs, or reply text are read or printed. Each attempt gets a failure layer:
 import argparse
 import collections
 import json
+import re
 from pathlib import Path
 
 
@@ -76,6 +77,13 @@ def load(paths):
                                  correct=False, passed=False, native=False, edits=0, compactions=0, layer='blocked',
                                  backend=''))
             elif 'case' in report:
+                # Prefer the latest rescore of this attempt (same diff, newer scorer).
+                rescored = sorted(path.parent.glob(path.stem + '.rescore*.json'),
+                                  key=lambda p: int(re.sub(r'\D', '', p.name.split('.rescore')[1]) or 0))
+                if rescored:
+                    latest = json.loads(rescored[-1].read_text())
+                    report = {**report, 'passed': latest['passed'], 'patch_correct': latest['patch_correct'],
+                              'score': latest['score']}
                 rows.append(dict(batch=report.get('label'), case=report['case'], group=report.get('group') or 'dev',
                                  mode=report.get('mode'), seconds=report.get('seconds'),
                                  correct=bool(report.get('patch_correct')), passed=bool(report.get('passed')),
