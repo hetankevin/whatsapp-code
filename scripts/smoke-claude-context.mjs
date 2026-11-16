@@ -41,6 +41,7 @@ const server = createGateway({
       if (requestClass === 'compaction') {
         compactions++;
         assert.equal(request.validators.size, 0, 'Compaction must be a text-only model request');
+        assert.match(request.prompt, /under 6,000 characters/, 'Compaction must ask for a summary that fits through WhatsApp');
         assert.doesNotMatch(request.prompt.split('CURRENT REQUEST:\n')[0], /For a tool call|EXACT tool name/);
         return parseReply('<summary>' + summary + '</summary>', request, {matchedTurn:true});
       }

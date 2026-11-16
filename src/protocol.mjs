@@ -1196,6 +1196,10 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     if (rangeGuide) prompt = prompt.replace('For a tool call, send only', 'For a listed tool, send only').replace(
       '\nCURRENT REQUEST:', () => '\n\n' + rangeGuide + '\n\nCURRENT REQUEST:'
     );
+    // Claude Code's native compaction summary returns through the same
+    // WhatsApp channel, next to these instructions and the following turns.
+    if (editOptions.compactionSummary) prompt = prompt.replace('\nCURRENT REQUEST:', () =>
+      '\nThis summary must fit through WhatsApp together with the instructions and the next turns. Keep your whole reply under 6,000 characters: state the task, files changed, current test state, and next step first, and leave out verbatim source code and long tool output.\nCURRENT REQUEST:');
     if (useSnapshot) {
       prompt = prompt.replace('\nCURRENT REQUEST:', '\nUse the supplied task and current tool state. current_file contains the numbered source for the single editable read, if available. last_tool_status reports the actual outcome of the latest tools. latest_test_failure may predate an edit. After a successful edit, run the tests. If a test failed and you need current source, Read the implementation again.\nCURRENT REQUEST:');
     } else if (testFailures.size) prompt = prompt.replace('\nCURRENT REQUEST:', '\nThe failed_tests field contains the latest failure since a possible workspace change. The test has failed. Read the implementation at relevant stack frames and compare caller arguments with the callee before editing. A verified pass requires a later successful test result.\nCURRENT REQUEST:');

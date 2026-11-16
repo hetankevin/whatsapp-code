@@ -126,7 +126,8 @@ export function createGateway({backend, token, maxChars = 60000, snapshotContext
       const textRequest = requestClass === 'compaction' ||
         (requestClass === 'auxiliary' && !body?.tools?.length);
       const request = textRequest
-        ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars)
+        ? prepare({...body, tools: [], tool_choice: {type: 'none'}}, maxChars, false, undefined,
+          requestClass === 'compaction' ? {compactionSummary: true} : {})
         : requestClass && requestClass !== 'main'
           ? prepare(body, maxChars)
           : prepare(body, maxChars, snapshotContext, editFiles, {...editOptions, ...(reasoningCue ? {reasoningCue} : {}), ...(reviewAfterPass ? {reviewAfterPass} : {}), ...(fewShot ? {fewShot} : {})});

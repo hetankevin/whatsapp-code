@@ -330,3 +330,8 @@ test('file contents re-attached after compaction leave the WhatsApp view before 
  assert.match(r.prompt, /re-attached after compaction, omitted/);
  assert.match(r.prompt, /const value3_299 = compute/);
 });
+test('compaction requests ask for a summary that fits through WhatsApp', () => {
+ const body = {model:'meta-ai-whatsapp',max_tokens:1024,messages:[{role:'user',content:'Summarize the conversation so far.'}],tools:[],tool_choice:{type:'none'}};
+ assert.match(prepare(body, 60000, false, undefined, {compactionSummary:true}).prompt, /under 6,000 characters/);
+ assert.doesNotMatch(prepare(body).prompt, /under 6,000 characters/);
+});
