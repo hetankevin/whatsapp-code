@@ -398,6 +398,16 @@ function resolveLineEdit(input, request, finalAttempt = false) {
     if (end_line >= start_line) error.unreadRange = {file_path: filePath, start_line, end_line};
     throw error;
   }
+  // A one-line placeholder over a long range (the template's own words, x,
+  // or the range's first line repeated) asks to see those lines. It is never
+  // applied as an edit; the lines are read instead.
+  const body = replacement.trim();
+  if (end_line - start_line + 1 >= 15 && body && !body.includes('\n') &&
+      (/^(?:replacement(?: code)?|x|\.{3}|…)$/i.test(body) || body === lines[start_line - first]?.trim() || body === lines[0]?.trim())) {
+    const error = repairableError('A one-line placeholder cannot replace lines ' + start_line + '-' + end_line + '. To see lines, request a Read; to edit, send the real replacement source.');
+    error.unreadRange = {file_path: filePath, start_line, end_line};
+    throw error;
+  }
   const start = start_line - first;
   const end = end_line - first + 1;
   let replacementLines = replacement === '' ? [] : replacement.split('\n');

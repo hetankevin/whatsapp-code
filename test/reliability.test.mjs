@@ -1424,3 +1424,15 @@ test('an EDIT header that keeps the READ_ID label is the same frame', () => {
   assert.deepEqual(labelled.input, plain.input);
   assert.equal(labelled.name, 'Edit');
 });
+test('a one-line placeholder over a long range reads those lines instead of editing', () => {
+  const source = Array.from({length: 40}, (_, i) => (i + 1) + '\t' + (i ? '  step(' + i + ');' : "'use strict';")).join('\n');
+  const request = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:source});
+  const id = request.editableReads[0].read_id;
+  for (const body of ["'use strict';", 'x', 'replacement code']) {
+    const [block] = parseReply('EDIT ' + id + ' 1 30\n' + body + '\nEND', request, {matchedTurn:true}).content;
+    assert.equal(block.name, 'Read', body);
+    assert.equal(block.input.offset, 1);
+  }
+  const [edit] = parseReply('EDIT ' + id + ' 3 5\n  done();\nEND', request, {matchedTurn:true}).content;
+  assert.equal(edit.name, 'Edit');
+});
