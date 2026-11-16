@@ -251,6 +251,8 @@ const lineEditInputSchema = {
   additionalProperties: false
 };
 
+const toolsUnavailableClaim = /not available to (?:this|the) agent|(?:do not|don't|cannot|can't) (?:have )?access (?:to )?(?:the )?(?:tools?|files?|repository|file ?system|checkout)|tools? (?:are|is|were) (?:not available|unavailable)/i;
+
 function repairableError(message) {
   const error = new GatewayError(message, 502);
   error.repairable = true;
@@ -1673,6 +1675,12 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
     // bypass validation for a reply that looks like the tool protocol.
     const startsWithJson = /^(?:\{|\[(?![^\]\n]+\](?:\(|\[)))/.test(trimmed);
     const hasProtocolMarkers = /^[ \t]*(?:EDIT[ \t]+\S+[ \t]+\S+|FILE:[ \t]*\S|(?:REPLACE|FILE)[ \t]+\d|<<<(?:FILE|OLD|NEW|END)>|\x60{3,}json\b)|"(?:request_id|tool_use)"|"content"\s*:/im.test(trimmed);
+    // Meta AI's agent backend sometimes tries to run the listed tools itself,
+    // fails, and answers that they are unavailable. Claude Code runs them.
+    if (matchedTurn && !finalAttempt && request.choice.type === 'auto' && request.validators?.size &&
+        toolsUnavailableClaim.test(trimmed)) {
+      throw repairableError('The listed tools are available: Claude Code runs them when you request them. Reply with the next tool call as JSON (or an EDIT frame), not with an answer that tools are unavailable.');
+    }
     if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && !startsWithJson && !hasProtocolMarkers) {
       checkVerificationReply(request, [], finalAttempt);
       return rerunInsteadOfClaim(request, [], finalAttempt, usage) ??

@@ -335,3 +335,11 @@ test('compaction requests ask for a summary that fits through WhatsApp', () => {
  assert.match(prepare(body, 60000, false, undefined, {compactionSummary:true}).prompt, /under 6,000 characters/);
  assert.doesNotMatch(prepare(body).prompt, /under 6,000 characters/);
 });
+test('an answer that claims the offered tools are unavailable gets one repair', () => {
+ const tools = [{name:'Read',description:'Read',input_schema:{type:'object',properties:{file_path:{type:'string'}},required:['file_path'],additionalProperties:false}}];
+ const r = prepare({model:'meta-ai-whatsapp',max_tokens:1024,messages:[{role:'user',content:'Fix the failing test'}],tools});
+ const claim = 'I could not complete the fix: the Read and Bash tools are not available to this agent in this environment.';
+ assert.throws(() => parseReply(claim, r, {matchedTurn:true}), error => error.repairable && /Claude Code runs them/.test(error.message));
+ assert.equal(parseReply(claim, r, {matchedTurn:true, finalAttempt:true}).content[0].text, claim);
+ assert.equal(parseReply('The bug is in lib/a.js; the tests pass now.', r, {matchedTurn:true}).stop_reason, 'end_turn');
+});
