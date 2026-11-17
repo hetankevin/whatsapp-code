@@ -251,6 +251,8 @@ const lineEditInputSchema = {
   additionalProperties: false
 };
 
+// A short reply that only announces the next step ("Fixing X by Y.").
+const announcedStep = /^(?:(?:Now,? |Next,? )?(?:let me (?!know\b)|I'll now |I will now |now I'll )|(?:Fixing|Applying|Editing|Updating|Patching|Implementing|Modifying|Changing|Adding|Removing|Rewriting|Running|Reading|Inspecting|Searching|Testing)\b)/i;
 const toolsUnavailableClaim = /not available to (?:this|the) agent|(?:do not|don't|cannot|can't) (?:have )?access (?:to )?(?:the )?(?:tools?|files?|repository|file ?system|checkout)|tools? (?:are|is|were) (?:not available|unavailable)/i;
 
 function repairableError(message) {
@@ -1364,6 +1366,8 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     }
   }
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
+  const taskUsedTools = !editFiles && !textOnly && taskIndex >= 0 &&
+    taskMessages.some(message => Array.isArray(message.content) && message.content.some(block => block.type === 'tool_use'));
   const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
     ? unfinishedWork(taskMessages, Boolean(editOptions.reviewAfterPass)) : undefined;
   // The last test command run in this task, and whether the workspace
@@ -1404,7 +1408,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     const first = transcript.find(message => message.role === 'user');
     sessionKey = createHash('sha256').update(JSON.stringify(first?.content ?? '')).digest('hex').slice(0, 32);
   }
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, testPasses, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, testPasses, taskUsedTools, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
     lastTest, changedSinceTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars, fullChars,
     unfinishedVerification, useVerificationContext, textOnly};
@@ -1491,9 +1495,17 @@ function readBeforePathEdit(text, request) {
   return {type:'tool_use', id:'toolu_' + randomBytes(12).toString('hex'), name:'Read', input};
 }
 
-function checkVerificationReply(request, calls, finalAttempt = false) {
+function checkVerificationReply(request, calls, finalAttempt = false, text = '') {
   if (request.unfinishedVerification && calls.length === 0) {
     throw repairableError('The configured test is still failing. Request a tool to investigate or edit the implementation.');
+  }
+  // A text reply ends Claude Code's turn. When it only announces the next
+  // step of a task already using tools, the session would stop before that
+  // step, often with no change made. Ask once for the tool.
+  const said = text.trim();
+  if (!finalAttempt && calls.length === 0 && request.taskUsedTools && request.choice.type === 'auto' && request.validators?.size &&
+      said.length <= 300 && !said.includes('\n\n') && announcedStep.test(said)) {
+    throw repairableError('This reply announces a next step but requests no tool, so Claude Code would end the session before that step. Request the tool for it now (an EDIT frame for an edit), or give a final answer that reports the outcome or a concrete blocker.');
   }
   // One reminder only. A second text reply is accepted as the final answer,
   // except that untested edits after a failing test run that same test.
@@ -1706,7 +1718,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       throw repairableError('The listed tools are available: Claude Code runs them when you request them. Reply with the next tool call as JSON (or an EDIT frame), not with an answer that tools are unavailable.');
     }
     if (matchedTurn && !request.editFiles && ['auto', 'none'].includes(request.choice.type) && !startsWithJson && !hasProtocolMarkers) {
-      checkVerificationReply(request, [], finalAttempt);
+      checkVerificationReply(request, [], finalAttempt, trimmed);
       return rerunInsteadOfClaim(request, [], finalAttempt, usage) ??
         assistantMessage(request.model, [{type: 'text', text: original}], usage);
     }
@@ -1894,7 +1906,7 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
   if (['any', 'tool'].includes(request.choice.type) && !calls.length) throw repairableError('Meta AI omitted a required tool.');
   if (request.choice.type === 'tool' && calls.some(b => b.name !== request.choice.name)) throw repairableError('Meta AI selected the wrong required tool.');
   if (request.choice.disable_parallel_tool_use && calls.length > 1) throw repairableError('Meta AI requested parallel tools when disabled.');
-  checkVerificationReply(request, calls, finalAttempt);
+  checkVerificationReply(request, calls, finalAttempt, blocks.filter(b => b.type === 'text').map(b => b.text).join('\n\n'));
   return rerunInsteadOfClaim(request, calls, finalAttempt, usage) ?? assistantMessage(request.model, blocks, usage);
 }
 

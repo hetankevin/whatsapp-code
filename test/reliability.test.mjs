@@ -1186,6 +1186,29 @@ test('a passing test is not rerun until something changes', () => {
   assert.equal(parseReply(again, later, {matchedTurn: true}).content[0].name, 'Bash');
 });
 
+test('a reply that only announces the next step is asked once for the tool', () => {
+  const tools = ['Read', 'Edit', 'Bash', 'Grep'].map(name => ({name, input_schema: {type: 'object'}}));
+  const fix = {role: 'user', content: 'Fix the bug in the encoder. Run the tests after the fix.'};
+  const read = [{role: 'assistant', content: [{type: 'tool_use', id: 'r1', name: 'Read', input: {file_path: 'lib/encoder.js'}}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: 'r1', content: '1\tproto.writeArray = function (arr) {'}]}];
+  const working = prepare({tools, messages: [fix, ...read]});
+  for (const said of ['Fixing null/undefined typed-array encoding in v1 encoder (inherited by v2).',
+    'Fixing always-multiline to compare the last item against the closing bracket, not the whole node.',
+    'Now let me read the decoder.', '{"content":[{"type":"text","text":"Updating writeArray to handle null."}]}']) {
+    assert.throws(() => parseReply(said, working, {matchedTurn: true}), /announces a next step/, said);
+    assert.equal(parseReply(said, working, {matchedTurn: true, finalAttempt: true}).content[0].type, 'text');
+  }
+  // Outcomes, questions, and answers before any tool use stay final answers.
+  for (const said of ['Fixed writeArray: null now encodes as N. The tests pass.', 'Let me know if you want the decoder changed too.',
+    'Which encoder version should I change, v1 or v2?']) {
+    assert.equal(parseReply(said, working, {matchedTurn: true}).content[0].text, said);
+  }
+  const fresh = prepare({tools, messages: [{role: 'user', content: 'What does writeArray do?'}]});
+  assert.equal(parseReply('Reading it as written, writeArray encodes a typed list.', fresh, {matchedTurn: true}).content[0].type, 'text');
+  const long = ('Updating notes: ' + 'the encoder writes each element in turn. '.repeat(10)).trim();
+  assert.equal(parseReply(long, working, {matchedTurn: true}).content[0].text, long);
+});
+
 test('a trimmed WhatsApp view leaves room for one repair under the limit', () => {
   const tools = ['Read', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
   const messages = [{role: 'user', content: 'Fix the parser.'}];
