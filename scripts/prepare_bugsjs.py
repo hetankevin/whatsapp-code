@@ -81,6 +81,13 @@ def main():
         if not (dirs['full'] / 'node_modules').exists():
             (dirs['full'] / 'node_modules').symlink_to(dirs['test'] / 'node_modules', target_is_directory=True)
         base = MOCHA[repo]
+        # A missing test path makes mocha exit before running anything, so a
+        # preservation check that names one can never pass. Refuse the case.
+        missing = [p for p in case['tests'] + case.get('preserve', []) for rev in ('test', 'full')
+                   if not (dirs[rev] / p).exists()]
+        if missing:
+            print('skip', case['id'], 'test paths missing from the checkout:', sorted(set(missing)))
+            continue
         cmd = base + case['tests'] + (['--grep', case['grep']] if case.get('grep') else [])
         code_test, failing = run(cmd, dirs['test'])
         code_full, _ = run(cmd, dirs['full'])

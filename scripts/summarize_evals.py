@@ -48,6 +48,8 @@ def layer(report):
         return 'decode'
     if 'worktree' in final.lower() or 'permission' in final.lower():
         return 'client'
+    if ((report.get('score') or {}).get('preserve') or {}).get('error'):
+        return 'harness'  # the scorer's preservation command ran no tests
     correct = report.get('patch_correct')
     edits = report.get('edits_ok', report.get('successful_line_edits'))
     if correct is None:  # eval_coding.py

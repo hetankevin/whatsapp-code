@@ -455,6 +455,10 @@ def score(case, pre, patch, out_stem, reference=None):
             preserve = {'ok': first.get('code') is not None and not regressions and first.get('passing', 0) > 0,
                         'passing': first.get('passing'), 'failing': first.get('failing'),
                         'new_failures': regressions[:10], 'flaky_unscored': unscored[:10]}
+            # A command that ran no tests (for example a missing test path) is a
+            # harness defect, not a verdict on the candidate. Fail closed, visibly.
+            if not first.get('passing') and not first.get('failing'):
+                preserve['error'] = 'the preservation command ran no tests'
         extra = []
         for i, cmd in enumerate(case.get('extra', [])):
             cmd = [str(project) if part == '{project}' else part for part in cmd]
