@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Build the six-module long-session fixture and its two manifests.
 
+With --eight, also add the TTL cache fix and the CSV parser feature
+(scripts/eval_coding.py) as tasks (7) and (8) and write chain-eight.json:
+eight tasks, one per turn, long enough that Claude Code compacts natively at
+the launcher's default window.
+
 All six middle-tier modules (scripts/eval_midtier.py) go into one project:
   test/    buggy modules, visible tests, AGENTS.md (the agent's checkout)
   full/    reference modules (used only to validate the fixture)
@@ -10,7 +15,7 @@ and two manifests for scripts/eval_bugsjs.py:
   chain-six.json  one module per turn: the first task, five --resume
                   follow-ups, then a final test-and-summarize follow-up
 
-    python3 scripts/make_synth_six.py <dir>
+    python3 scripts/make_synth_six.py [--eight] <dir>
     python3 scripts/eval_bugsjs.py --manifest <dir>/chain-six.json --out <results> \
         --label chain6 --budget 1800 --max-turns 60
 """
@@ -20,9 +25,54 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from eval_midtier import TASKS  # noqa: E402
+from eval_midtier import TASKS as MIDTIER  # noqa: E402
+from eval_coding import SCENARIOS  # noqa: E402
 
-SUFFIX = ' Inspect the project instructions, fix the implementation, and run its tests.'
+# Reference solutions for the two eval_coding scenarios, used only to validate
+# the fixture (the agent never sees full/).
+REFERENCES = {
+    'cache': '''export class TTLCache {
+  constructor(now = Date.now) { this.now = now; this.entries = new Map(); }
+  set(key, value, ttl) {
+    this.entries.set(key, { value, expires: this.now() + ttl });
+  }
+  get(key) {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (this.now() >= entry.expires) { this.entries.delete(key); return undefined; }
+    return entry.value;
+  }
+}
+''',
+    'csv': '''export function parseCSV(text) {
+  if (text === '') return [];
+  const rows = [];
+  let row = [], field = '', quoted = false, started = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch !== '"') field += ch;
+      else if (text[i + 1] === '"') { field += '"'; i++; }
+      else quoted = false;
+      continue;
+    }
+    if (ch === '\\r' && text[i + 1] === '\\n') continue;
+    if (ch === '\\n') { row.push(field); rows.push(row); row = []; field = ''; started = false; continue; }
+    started = true;
+    if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else field += ch;
+  }
+  if (quoted) throw new Error('Unclosed quoted field');
+  if (started) { row.push(field); rows.push(row); }
+  return rows;
+}
+''',
+}
+TASKS = dict(MIDTIER)
+
+SUFFIXES = (' Inspect the project instructions, fix the implementation, and run its tests.',
+            ' Inspect project instructions, implement the feature, and run tests.')
 AGENTS = ('Keep the existing named exports. Add no dependencies. Do not modify package.json or *.test.mjs files. '
           'Run node --test before reporting completion.\n')
 PACKAGE = '{"private":true,"type":"module","scripts":{"test":"node --test"}}\n'
@@ -38,11 +88,14 @@ LONG_FOLLOW_UP = 'Continue the same task. Run exactly: node --test. If anything 
 
 def issue(name):
     text = TASKS[name]['task']
-    assert text.endswith(SUFFIX), name
-    return text[:-len(SUFFIX)]
+    suffix = next(s for s in SUFFIXES if text.endswith(s))
+    return text[:-len(suffix)]
 
 
-def build(root):
+def build(root, eight=False):
+    if eight:
+        for name in ('cache', 'csv'):
+            TASKS[name] = {**SCENARIOS[name], 'reference': REFERENCES[name]}
     for variant, key in (('test', 'source'), ('full', 'reference')):
         project = root / variant
         (project / 'node_modules').mkdir(parents=True, exist_ok=True)
@@ -71,6 +124,13 @@ def build(root):
         'This project has six modules with bugs. I will give you one at a time in this session. Inspect the project '
         'instructions first. Then fix this one: ' + issues[0] + AFTER_EACH),
         'resume_prompts': ['Next: ' + text + AFTER_EACH for text in issues[1:]] + [FINAL]}
+    if eight:
+        chain_eight = {'id': 'chain-eight', **case, 'task': (
+            'This project has eight modules to fix or finish. I will give you one at a time in this session. Inspect '
+            'the project instructions first. Then do this one: ' + issues[0] + AFTER_EACH),
+            'resume_prompts': ['Next: ' + text + AFTER_EACH for text in issues[1:]] + [FINAL]}
+        (root / 'chain-eight.json').write_text(json.dumps([chain_eight], indent=1) + '\n')
+        return
     (root / 'long-six.json').write_text(json.dumps([long_six], indent=1) + '\n')
     (root / 'chain-six.json').write_text(json.dumps([chain_six], indent=1) + '\n')
 
@@ -89,11 +149,14 @@ def validate(root):
 
 
 def main():
-    if len(sys.argv) != 2:
+    args = sys.argv[1:]
+    eight = '--eight' in args
+    args = [a for a in args if a != '--eight']
+    if len(args) != 1:
         sys.exit(__doc__)
-    root = Path(sys.argv[1]).resolve()
+    root = Path(args[0]).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    build(root)
+    build(root, eight)
     sys.exit(0 if validate(root) else 1)
 
 
