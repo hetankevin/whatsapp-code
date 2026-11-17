@@ -235,12 +235,16 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
         session = result.get('session_id')
         error = str(result.get('result') or '')[:300] if (result.get('is_error') or exit_code) else None
         final = str(result.get('result') or '')
-        if resume and session and not timed_out:
+        follow_ups = [resume] if isinstance(resume, str) else list(resume or [])
+        for number, follow_up in enumerate(follow_ups, 1):
+            if not session or timed_out:
+                break
             # Continue the same native session; Claude Code restores the transcript.
             args = ['node', launcher, '--print', '--verbose', '--output-format', 'stream-json',
-                    '--max-turns', str(max_turns), '--resume', session, *tools, '--', resume]
+                    '--max-turns', str(max_turns), '--resume', session, *tools, '--', follow_up]
             remaining = max(30, budget - (time.time() - begin))
-            with open(out_stem + '-resume.jsonl', 'w') as stream, open(out_stem + '-resume.stderr', 'w') as stderr:
+            suffix = '-resume' if number == 1 else f'-resume{number}'
+            with open(out_stem + suffix + '.jsonl', 'w') as stream, open(out_stem + suffix + '.stderr', 'w') as stderr:
                 child = subprocess.Popen(args, cwd=project, env=env, stdout=stream, stderr=stderr, start_new_session=True)
                 try:
                     child.wait(timeout=remaining)
@@ -249,8 +253,9 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
                 exit_code = child.returncode
-            later = list(events_of(Path(out_stem + '-resume.jsonl').read_text(errors='replace').split('\n')))
+            later = list(events_of(Path(out_stem + suffix + '.jsonl').read_text(errors='replace').split('\n')))
             result = next((e for e in reversed(later) if e.get('type') == 'result'), {})
+            session = result.get('session_id') or session
             error = str(result.get('result') or '')[:300] if (result.get('is_error') or exit_code) else None
             final = str(result.get('result') or '')
             events += later
@@ -331,7 +336,7 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
         final = ' '.join(b.get('text', '') for b in blocks if isinstance(b, dict) and b.get('type') == 'text')
         error = next((line[:300] for line in final.splitlines() if 'API Error' in line or 'Request too large' in line), None)
         compactions = sum(1 for e in events if e.get('type') == 'system' and e.get('subtype') == 'compact_boundary')
-    return dict(compactions=compactions, resumed=bool(resume), seconds=round(time.time() - begin, 1), timed_out=timed_out, exit_code=exit_code,
+    return dict(compactions=compactions, resumed=bool(resume), follow_ups=len([resume] if isinstance(resume, str) else list(resume or [])), seconds=round(time.time() - begin, 1), timed_out=timed_out, exit_code=exit_code,
                 events=events, session=session, error=error, final=final[:300])
 
 
@@ -514,7 +519,7 @@ def main():
     parser.add_argument('--budget', type=int, default=300)
     parser.add_argument('--max-turns', type=int, default=40)
     parser.add_argument('--gateway-log', type=Path)
-    parser.add_argument('--resume-prompt', help='print mode: resume the session once with this follow-up')
+    parser.add_argument('--resume-prompt', action='append', help='print mode: resume the session with this follow-up (repeatable; a case may also list resume_prompts)')
     parser.add_argument('--context-tokens', type=int, help='client context window, to force native compaction')
     parser.add_argument('--rescore', nargs='*', help='re-judge saved runs under these labels, then exit')
     parser.add_argument('--configured-test', action='store_true', help='set WA_TEST_COMMAND to the case command (configured, not default)')
@@ -575,7 +580,7 @@ def main():
                 waited += clippy_wait
                 replies_at = reply_log_offset()
             print('running', args.label, case['id'], k, args.mode, 'waited', waited, 'quota wait', quota_wait, flush=True)
-            run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, args.resume_prompt)
+            run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, case.get('resume_prompts') or args.resume_prompt)
             facts = analyse(run.pop('events'), case['cmd'])
             # Background sessions edit inside a native worktree under .claude/worktrees.
             worktrees = [Path(line[9:]) for line in subprocess.check_output(
