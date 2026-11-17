@@ -1062,8 +1062,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       snapshot.lines.map((line, index) => (snapshot.first + index) + '\t' + line).join('\n');
   };
   const modelTools = rangeEnabled ? tools.filter(tool => tool.name !== 'Edit') : tools;
-  const {failures, latestFailure, previousFailure} = testState(taskMessages, editOptions.command);
+  const {failures, passes, latestFailure, previousFailure} = testState(taskMessages, editOptions.command);
   const testFailures = choice.type === 'auto' ? failures : new Map();
+  const testPasses = choice.type === 'auto' && !editFiles ? passes : new Set();
   const unfinishedVerification = !editFiles && choice.type === 'auto' && editOptions.command &&
     latestFailure?.command === editOptions.command;
   const useVerificationContext = unfinishedVerification && taskIndex >= 0 && snapshots.size > 0;
@@ -1135,6 +1136,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
           : messages,
         editable_reads: rangeEnabled ? editableReads : undefined,
         last_tool_status: latestToolStatus(taskMessages),
+        // A command the request asks for still reads as an order after it
+        // ran. Say, next to the request, that the passing result is current.
+        test_status: testPasses.size ? [...testPasses].join(' and ') + ' already passed in this task, and nothing has changed since, so that result still applies. Run it again only after a change. If the current request is done, give your final answer now.' : undefined,
         current_request: focusRequest ? messages[taskIndex].content : undefined
       })
     };
@@ -1290,18 +1294,21 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   // size of its whole transcript, not the trimmed WhatsApp view, so its own
   // accounting (and so native compaction) follows what it actually holds.
   const fullChars = prompt.length;
+  // A rejected reply gets one repair: the reason (and any failure excerpt)
+  // followed by this prompt. Trim to leave room for it under the limit.
+  const fit = maxChars - 2000;
   // Native compaction requests carry the whole transcript. Trim their
   // WhatsApp view the same way rather than refusing them.
   const trimmable = (!textOnly || Boolean(editOptions.compactionSummary)) && !editFiles && !useSnapshot && !useVerificationContext;
   // After a native compaction, Claude Code re-attaches files read earlier as
   // system-reminder text in the latest message. They duplicate files the model
   // can read again, so they leave the WhatsApp view first when it is too long.
-  if (prompt.length > maxChars && trimmable) {
+  if (prompt.length > fit && trimmable) {
     const reattached = messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
       .filter(block => block.type === 'text' && typeof block.text === 'string' && block.text.length > 400 &&
         block.text.startsWith('<system-reminder>\nResult of calling the Read tool:'));
     for (const block of reattached) {
-      if (prompt.length <= maxChars) break;
+      if (prompt.length <= fit) break;
       block.text = '<system-reminder>\nResult of calling the Read tool: [' + block.text.length +
         ' characters of file contents re-attached after compaction, omitted to fit the WhatsApp limit. Read the file again if you need it.]\n</system-reminder>';
       omittedOutputs++;
@@ -1311,7 +1318,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   // Claude Code owns the transcript and its compaction. If the WhatsApp view
   // still exceeds the limit, omit the oldest tool outputs from that view only.
   // The task, the latest exchange, and excerpts still being edited stay.
-  if (prompt.length > maxChars && trimmable) {
+  if (prompt.length > fit && trimmable) {
     const keep = new Set([taskIndex, messages.length - 1, messages.length - 2]);
     const omittable = [];
     messages.forEach((message, index) => {
@@ -1321,7 +1328,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       });
     });
     for (const block of omittable) {
-      if (prompt.length <= maxChars) break;
+      if (prompt.length <= fit) break;
       const size = JSON.stringify(block.content).length;
       block.content = '[Earlier tool output omitted to fit the WhatsApp limit (' + size + ' characters). Run the tool again if it is still needed.]';
       if (snapshots.delete(block.tool_use_id)) {
@@ -1336,7 +1343,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   // One huge search or command output in the latest exchange can still
   // exceed the limit. Keep the start and end of the largest such outputs in
   // the WhatsApp view, with a note. Read outputs stay whole: edits use them.
-  if (prompt.length > maxChars && trimmable) {
+  if (prompt.length > fit && trimmable) {
     const names = new Map();
     for (const message of messages) {
       if (Array.isArray(message.content)) for (const block of message.content) if (block.type === 'tool_use') names.set(block.id, block.name);
@@ -1347,9 +1354,9 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
       .filter(block => block.type === 'tool_result' && names.get(block.tool_use_id) !== 'Read' && text(block).length > 3000)
       .sort((a, b) => text(b).length - text(a).length);
     for (const block of large) {
-      if (prompt.length <= maxChars) break;
+      if (prompt.length <= fit) break;
       const full = text(block);
-      const keep = Math.max(2000, full.length - (prompt.length - maxChars) - 400);
+      const keep = Math.max(2000, full.length - (prompt.length - fit) - 400);
       const head = Math.ceil(keep * 0.7);
       block.content = full.slice(0, head) + '\n[' + (full.length - keep) + ' characters of this output omitted to fit the WhatsApp limit. Narrow the search or command if you need them.]\n' + full.slice(full.length - (keep - head));
       shortenedOutputs++;
@@ -1397,7 +1404,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     const first = transcript.find(message => message.role === 'user');
     sessionKey = createHash('sha256').update(JSON.stringify(first?.content ?? '')).digest('hex').slice(0, 32);
   }
-  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
+  return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, testPasses, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
     lastTest, changedSinceTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars, fullChars,
     unfinishedVerification, useVerificationContext, textOnly};
@@ -1873,6 +1880,11 @@ export function parseReply(raw, request, {matchedTurn = false, finalAttempt = fa
       const error = repairableError('This test command already failed and no workspace change is recorded. Inspect the failure, then edit or investigate before rerunning it.');
       error.testFailure = request.testFailures.get(repeatedTest);
       throw error;
+    }
+    // Rerunning a passing test with nothing changed only repeats the result.
+    if (repeatedTest && request.testPasses?.has(repeatedTest)) {
+      if (finalAttempt) return {type: 'text', text: 'Not rerun: ' + repeatedTest + ' already passed in this task and nothing has changed since, so that result still applies.'};
+      throw repairableError('This test command already passed in this task and nothing has changed since, so its result still applies. Give your final answer, or change something before running it again.');
     }
     const id = (lineEdit ? 'toolu_lines_' : 'toolu_') + randomBytes(12).toString('hex');
     return {type: 'tool_use', id, name, input};

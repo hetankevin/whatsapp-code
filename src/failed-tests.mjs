@@ -42,6 +42,8 @@ function failureExcerpt(content) {
 
 export function testState(messages, configuredCommand) {
   const failures = new Map();
+  // Test commands that passed with no workspace change since.
+  const passes = new Set();
   const histories = new Map();
   const pending = new Map();
   let latestCommand;
@@ -51,6 +53,7 @@ export function testState(messages, configuredCommand) {
       const calls = blocks.filter(block => block.type === 'tool_use');
       if (calls.some(call => !READ_ONLY.has(call.name) && !testCommand(call, configuredCommand))) {
         failures.clear();
+        passes.clear();
         pending.clear();
         continue;
       }
@@ -66,6 +69,7 @@ export function testState(messages, configuredCommand) {
         pending.delete(result.tool_use_id);
         latestCommand = command;
         if (result.is_error) {
+          passes.delete(command);
           const failure = failureExcerpt(result.content);
           failures.set(command, failure);
           histories.set(command, {latestFailure:{command, failure},
@@ -73,9 +77,10 @@ export function testState(messages, configuredCommand) {
         } else {
           failures.delete(command);
           histories.delete(command);
+          passes.add(command);
         }
       }
     }
   }
-  return {failures, ...histories.get(configuredCommand ?? latestCommand)};
+  return {failures, passes, ...histories.get(configuredCommand ?? latestCommand)};
 }

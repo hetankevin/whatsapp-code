@@ -1157,6 +1157,50 @@ test('a repeated success claim after untested edits reruns the failing test nati
   assert.equal(parseReply(claim, other, {matchedTurn: true, finalAttempt: true}).content[0].type, 'text');
 });
 
+test('a passing test is not rerun until something changes', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const step = (id, name, input, content, is_error = false) => [
+    {role: 'assistant', content: [{type: 'tool_use', id, name, input}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: id, content, is_error}]}
+  ];
+  const run = {command: 'node --test', description: 'Run node test suite'};
+  const again = JSON.stringify({content: [{type: 'tool_use', name: 'Bash', input: run}]});
+  const ask = {role: 'user', content: 'Run exactly: node --test. If anything fails, fix it and run it again.'};
+  const passed = prepare({tools, messages: [ask, ...step('t1', 'Bash', run, '# pass 14\n# fail 0')]});
+  assert.match(passed.prompt, /node --test already passed in this task, and nothing has changed since/);
+  assert.throws(() => parseReply(again, passed, {matchedTurn: true}), /already passed/);
+  const [ended] = parseReply(again, passed, {matchedTurn: true, finalAttempt: true}).content;
+  assert.equal(ended.type, 'text');
+  assert.match(ended.text, /^Not rerun: node --test already passed/);
+  assert.equal(parseReply('All 14 tests pass.', passed, {matchedTurn: true}).content[0].text, 'All 14 tests pass.');
+  // A change since the pass, a failure, or a new request makes a rerun useful.
+  const edited = prepare({tools, messages: [ask, ...step('t1', 'Bash', run, '# pass 14'),
+    ...step('e1', 'Edit', {file_path: 'a.js', old_string: 'a', new_string: 'b'}, 'updated')]});
+  assert.doesNotMatch(edited.prompt, /already passed/);
+  assert.equal(parseReply(again, edited, {matchedTurn: true}).content[0].name, 'Bash');
+  const failed = prepare({tools, messages: [ask, ...step('t1', 'Bash', run, '# pass 14'), ...step('t2', 'Bash', run, 'not ok 1', true)]});
+  assert.doesNotMatch(failed.prompt, /already passed/);
+  const later = prepare({tools, messages: [ask, ...step('t1', 'Bash', run, '# pass 14'),
+    {role: 'assistant', content: [{type: 'text', text: 'All pass.'}]}, {role: 'user', content: 'Run the tests again.'}]});
+  assert.doesNotMatch(later.prompt, /already passed/);
+  assert.equal(parseReply(again, later, {matchedTurn: true}).content[0].name, 'Bash');
+});
+
+test('a trimmed WhatsApp view leaves room for one repair under the limit', () => {
+  const tools = ['Read', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const messages = [{role: 'user', content: 'Fix the parser.'}];
+  for (let i = 0; i < 6; i++) {
+    messages.push({role: 'assistant', content: [{type: 'tool_use', id: 'b' + i, name: 'Bash', input: {command: 'cat log' + i}}]},
+      {role: 'user', content: [{type: 'tool_result', tool_use_id: 'b' + i, content: ('log ' + i + ' line\n').repeat(400)}]});
+  }
+  const full = prepare({tools, messages}).prompt.length;
+  // Omitting one output would fit the limit itself, but not the repair room.
+  const limit = full - 3000;
+  const fitted = prepare({tools, messages}, limit);
+  assert.ok(fitted.prompt.length <= limit - 2000, `${fitted.prompt.length} > ${limit - 2000}`);
+  assert.equal(fitted.fullChars, full);
+});
+
 test('tool output in the WhatsApp view drops terminal styling and dependency frames', () => {
   const tools = ['Read', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
   const output = 'Exit code 3\n\x1b[90m․\x1b[0m'.repeat(1) + '․'.repeat(30) + '\n\x1b[32m 31 passing\x1b[0m\n  1) res .send(code, body) should set .statusCode and body:\n' +
