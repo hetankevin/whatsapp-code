@@ -556,17 +556,6 @@ def main():
             stem = str(runs / f"{case['id']}-r{k}")
             if Path(stem + '.json').exists():
                 continue
-            holder = Path(tempfile.mkdtemp(prefix='wa-eval-run-'))
-            project = holder / case['id']
-            copy_tree(Path(case['test_dir']), project)
-            if not (project / 'node_modules').exists():
-                (project / 'node_modules').symlink_to(Path(case['test_dir']) / 'node_modules')
-            init_git(project)
-            config = holder / 'claude'
-            config.mkdir(mode=0o700)
-            (config / '.claude.json').write_text(json.dumps(
-                {'hasCompletedOnboarding': True, 'projects': {str(project): {'hasTrustDialogAccepted': True},
-                                                              str(project.resolve()): {'hasTrustDialogAccepted': True}}}))
             log_start = args.gateway_log.stat().st_size if args.gateway_log and args.gateway_log.exists() else 0
             replies_at = reply_log_offset()
             quota_wait = wait_for_quota()
@@ -583,6 +572,20 @@ def main():
                     sys.exit(3)
                 waited += clippy_wait
                 replies_at = reply_log_offset()
+            # Copy the checkout only after the waits. The copies keep the fixture's old timestamps, and
+            # macOS's daily cleaner deletes such files from $TMPDIR, so a checkout made before a long
+            # quota wait can lose most of its files before the session starts.
+            holder = Path(tempfile.mkdtemp(prefix='wa-eval-run-'))
+            project = holder / case['id']
+            copy_tree(Path(case['test_dir']), project)
+            if not (project / 'node_modules').exists():
+                (project / 'node_modules').symlink_to(Path(case['test_dir']) / 'node_modules')
+            init_git(project)
+            config = holder / 'claude'
+            config.mkdir(mode=0o700)
+            (config / '.claude.json').write_text(json.dumps(
+                {'hasCompletedOnboarding': True, 'projects': {str(project): {'hasTrustDialogAccepted': True},
+                                                              str(project.resolve()): {'hasTrustDialogAccepted': True}}}))
             print('running', args.label, case['id'], k, args.mode, 'waited', waited, 'quota wait', quota_wait, flush=True)
             run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, case.get('resume_prompts') or args.resume_prompt)
             facts = analyse(run.pop('events'), case['cmd'])

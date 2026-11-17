@@ -68,12 +68,19 @@ def backend(report):
 def load(paths):
     rows = []
     for root in paths:
+        # harness-notes.json maps '<label>/<case>-r<k>' to the reason an attempt was invalid
+        # through no fault of the model or the gateway (for example, a damaged checkout).
+        # The attempt stays in the table with layer 'harness'.
+        notes_file = Path(root) / 'harness-notes.json'
+        notes = json.loads(notes_file.read_text()) if notes_file.exists() else {}
         for path in sorted(Path(root).rglob('*.json')):
-            if '.rescore' in path.name or path.name.startswith(('preflight', 'reference', 'manifest')):
+            if '.rescore' in path.name or path.name.startswith(('preflight', 'reference', 'manifest', 'isolated', 'harness-notes')):
                 continue
             try:
                 report = json.loads(path.read_text())
             except ValueError:
+                continue
+            if not isinstance(report, dict):
                 continue
             if report.get('blocked'):
                 rows.append(dict(batch=report.get('label'), case=report['case'], group='blocked', mode=None, seconds=None,
@@ -92,7 +99,8 @@ def load(paths):
                                  correct=bool(report.get('patch_correct')), passed=bool(report.get('passed')),
                                  native=bool(report.get('native_test_pass_after_edit')),
                                  edits=report.get('edits_ok'), compactions=report.get('compactions', 0),
-                                 layer=layer(report), backend=backend(report)))
+                                 layer='harness' if notes.get(f'{path.parent.name}/{path.stem}') and not report.get('passed')
+                                 else layer(report), backend=backend(report)))
             elif 'scenario' in report:
                 correct = bool(report.get('visible') and report.get('held_out') and report.get('implementation_only'))
                 rows.append(dict(batch=path.parent.name, case=report['scenario'], group='synthetic', mode='print',
