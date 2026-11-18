@@ -41,8 +41,9 @@ def layer(report):
         return 'context'
     if 'snapshot' in error or 'stale' in error.lower() or 'does not match this request' in error:
         return 'identity'
-    # Meta AI sent nothing (504) or WhatsApp dropped the connection (503).
-    if 'response timed out' in error or '503 disconnected' in error:
+    # Meta AI sent nothing (504) or WhatsApp dropped the connection (503, or a
+    # 502 from a send that hit a connection that had just closed).
+    if 'response timed out' in error or '503 disconnected' in error or 'failed to send message' in error:
         return 'no reply'
     if error:
         return 'decode'
