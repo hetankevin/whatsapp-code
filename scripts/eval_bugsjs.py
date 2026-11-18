@@ -86,12 +86,18 @@ def run_cmd(project, cmd, log, timeout=120):
 
 
 def preflight(case, out):
-    cache = out / (f"preflight-{case['id']}.json" if SCORER_REVISION < 5 else f"preflight-v{SCORER_REVISION}-{case['id']}.json")
-    if cache.exists():
-        return json.loads(cache.read_text())
+    # Check the fixture on every run, not only before the first preflight: files can disappear later.
     for key in ('test_dir', 'full_dir'):
         if not any(Path(case[key]).iterdir()) or not (Path(case[key]) / 'package.json').exists():
             raise SystemExit(f"fixture {case['id']} {key} is empty or damaged: {case[key]}")
+    # A missing check script fails every candidate (it once vanished in a /tmp cleanup).
+    for cmd in case.get('extra', []):
+        for arg in cmd:
+            if arg.startswith('/') and not Path(arg).exists():
+                raise SystemExit(f"fixture {case['id']} extra check is missing: {arg}")
+    cache = out / (f"preflight-{case['id']}.json" if SCORER_REVISION < 5 else f"preflight-v{SCORER_REVISION}-{case['id']}.json")
+    if cache.exists():
+        return json.loads(cache.read_text())
     with tempfile.TemporaryDirectory(prefix='wa-eval-pre-') as tmp:
         result = {}
         for rev in ('test', 'full'):
