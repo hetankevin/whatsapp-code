@@ -1553,6 +1553,41 @@ test('a WhatsApp disconnect does not end the pending request; an interrupted sen
   await assert.rejects(third, /logged_out/);
   assert.equal(await w.waitReady(50), false);
 });
+test('a send that fails because the connection just dropped is resent, whichever transport event comes first', async () => {
+  const w = Object.create(WhatsApp.prototype);
+  const writes = [];
+  Object.assign(w, {ready:true, status:'ready', timeout:3000, quietAfter:1500, cooldown:60000, maxCooldown:60000, silences:0, fallback:true,
+    standardUntil:0, resendAfter:40, pairingPage: async () => {}, child:{stdin:{write:line => writes.push(JSON.parse(line))}}});
+  const closed = 'failed to send message node: failed to write msg: failed to write frame: use of closed network connection';
+  // The send error arrives before the disconnect event (seen live on Express 17).
+  const first = w.complete(prepare({messages:[{role:'user',content:'One'}]}));
+  await w.event({event:'error', id:writes[0].id, error:closed});
+  await w.event({event:'disconnected'});
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(writes.length, 1, 'no resend while disconnected');
+  await w.event({event:'ready', bot:'bot'});
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].prompt, writes[0].prompt);
+  // A second drop during the same request is survived too.
+  await w.event({event:'disconnected'});
+  await w.event({event:'error', id:writes[1].id, error:closed});
+  await w.event({event:'ready', bot:'bot'});
+  assert.equal(writes.length, 3);
+  await w.event({event:'message', id:'a', target:writes[2].id, edit:'full', message:{conversation:'After two drops.'}});
+  assert.deepEqual((await first).content, [{type:'text', text:'After two drops.'}]);
+  // No disconnect event follows (the transport had already reconnected): resend after a short wait.
+  const second = w.complete(prepare({messages:[{role:'user',content:'Two'}]}));
+  await w.event({event:'error', id:writes[3].id, error:closed});
+  assert.equal(writes.length, 4);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(writes.length, 5);
+  await w.event({event:'message', id:'b', target:writes[4].id, edit:'full', message:{conversation:'Resent.'}});
+  assert.deepEqual((await second).content, [{type:'text', text:'Resent.'}]);
+  // Any other send error while connected still ends the request.
+  const third = w.complete(prepare({messages:[{role:'user',content:'Three'}]}));
+  await w.event({event:'error', id:writes[5].id, error:'server returned error 479'});
+  await assert.rejects(third, /479/);
+});
 test('an EDIT header that keeps the READ_ID label is the same frame', () => {
   const request = lineEditRequest([], {type:'tool_result',tool_use_id:'read-x',content:'7\tfunction f() {\n8\treturn "old";\n9\t}'});
   const id = request.editableReads[0].read_id;

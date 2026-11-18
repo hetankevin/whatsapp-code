@@ -29,6 +29,9 @@ export function botMeta(message, depth = 0) {
   return null;
 }
 
+// Transport send errors that mean the message never left this device.
+const CONNECTION_LOST = /use of closed network connection|failed to write frame|websocket (?:is )?not connected|not connected|broken pipe|connection reset|WhatsApp is not ready/i;
+
 export class WhatsApp {
   constructor({root, stateDir, timeout = 120000, quietAfter = 60000, cooldown = 20 * 60000,
     maxCooldown = 4 * 3600000, fallback = process.env.WA_FALLBACK !== '0'}) {
@@ -84,12 +87,7 @@ export class WhatsApp {
     }
     if (e.event === 'ready') {
       this.ready = true; this.status = 'ready'; this.bot = e.bot;
-      const p = this.pending;
-      if (p?.awaitingReconnect) {
-        p.awaitingReconnect = false; p.resentAfterReconnect = true;
-        console.error('WhatsApp reconnected; sending the interrupted prompt again.');
-        this.sendPrompt(p, p.prompt);
-      }
+      if (this.pending?.awaitingReconnect) this.resendInterrupted(this.pending);
       await this.pairingPage('<h1>WhatsApp connected</h1><p>You can close this page and start whatsapp-code.</p>');
       console.error(`WhatsApp ready (${e.bot}).` + (this.disconnectedAt ? ` Reconnected after ${((Date.now() - this.disconnectedAt) / 1000).toFixed(1)} s.` : ''));
       this.disconnectedAt = 0;
@@ -107,10 +105,21 @@ export class WhatsApp {
     if (e.event === 'error') {
       if (!e.id) this.fail(e.error);
       else if (e.id === this.pending?.id) {
-        // A send attempted while disconnected never left this device: send it
-        // again once the transport is back.
-        if (!this.ready && !this.pending.resentAfterReconnect) this.pending.awaitingReconnect = true;
-        else this.pending.reject(new GatewayError(e.error, 502));
+        // A send that failed because the connection was down, or had just
+        // dropped, never left this device: send it again once the transport
+        // is back. The send error can arrive before the disconnect event, or
+        // after the transport has already reconnected, so a connection error
+        // counts even while ready; then resend after a short wait unless a
+        // disconnect event arrives first.
+        const p = this.pending;
+        if ((!this.ready || CONNECTION_LOST.test(e.error)) && (p.resends ?? 0) < 3) {
+          p.awaitingReconnect = true;
+          clearTimeout(p.resendCheck);
+          p.resendCheck = setTimeout(() => {
+            if (this.pending === p && p.awaitingReconnect && this.ready) this.resendInterrupted(p);
+          }, this.resendAfter ?? 5000);
+        }
+        else p.reject(new GatewayError(e.error, 502));
       }
       return;
     }
@@ -170,6 +179,13 @@ export class WhatsApp {
       kinds: Object.keys(e.message ?? {}),
       meta: botMeta(e.message), text: extractText(e.message, true)};
     try { appendFileSync(file, JSON.stringify(record) + '\n', {mode: 0o600}); } catch {}
+  }
+  resendInterrupted(p) {
+    clearTimeout(p.resendCheck);
+    p.awaitingReconnect = false;
+    p.resends = (p.resends ?? 0) + 1;
+    console.error('WhatsApp reconnected; sending the interrupted prompt again.');
+    this.sendPrompt(p, p.prompt);
   }
   repairOrReject(p) {
     if (this.pending !== p) return;
@@ -248,7 +264,7 @@ export class WhatsApp {
         this.sendPrompt(p, request.prompt);
       });
     } finally {
-      clearTimeout(p?.timer); clearTimeout(p?.settle); clearTimeout(p?.quiet);
+      clearTimeout(p?.timer); clearTimeout(p?.settle); clearTimeout(p?.quiet); clearTimeout(p?.resendCheck);
       signal?.removeEventListener('abort', p?.abort);
       this.pending = null;
     }
