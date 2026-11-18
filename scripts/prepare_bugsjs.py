@@ -75,9 +75,19 @@ def main():
                     tar.extractall(target, filter='data')
                 archive.unlink()
             dirs[rev] = target
+        install = ['npm', 'install', '--ignore-scripts', '--no-package-lock', '--no-audit', '--no-fund', '--legacy-peer-deps',
+                   '--loglevel', 'error']
         if not (dirs['test'] / 'node_modules').exists():
-            subprocess.run(['npm', 'install', '--ignore-scripts', '--no-package-lock', '--no-audit', '--no-fund', '--legacy-peer-deps',
-                            '--loglevel', 'error'], cwd=dirs['test'], check=True)
+            subprocess.run(install, cwd=dirs['test'], check=True)
+        if not (dirs['test'] / MOCHA[repo][0]).exists():
+            # Old checkouts that ask for "mocha": "*" get today's mocha, which no
+            # longer ships the runner they need. Install what was current when
+            # the buggy commit was written instead.
+            date = subprocess.run(['git', '-C', str(source), 'log', '-1', '--format=%aI', f'Bug-{bug}'],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            subprocess.run(['rm', '-rf', str(dirs['test'] / 'node_modules')], check=True)
+            subprocess.run(install + ['--before', date], cwd=dirs['test'], check=True)
+            print('installed', case['id'], 'dependencies as of', date)
         if not (dirs['full'] / 'node_modules').exists():
             (dirs['full'] / 'node_modules').symlink_to(dirs['test'] / 'node_modules', target_is_directory=True)
         base = MOCHA[repo]
