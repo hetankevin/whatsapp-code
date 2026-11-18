@@ -13,6 +13,36 @@ export function testCommand(tool, configuredCommand) {
     : null;
 }
 
+// One shell word: unquoted characters, escapes and quoted segments, joined.
+const SHELL_WORD = /(?:'[^']*'|"(?:\\[\s\S]|[^"\\])*"|\\[\s\S]|[^\s'"\\])+/g;
+
+// A test command's name filter (mocha --grep, node --test-name-pattern,
+// pytest -k) and the same command without it, or null when it has none.
+// Words are kept verbatim, so quoting survives. Short options count only for
+// the runner that defines them: mocha -t is a timeout, not a filter.
+export function nameFilter(command) {
+  const words = typeof command === 'string' ? command.trim().match(SHELL_WORD) ?? [] : [];
+  const mocha = /(?:^|\/)_?mocha$/.test(words[0] ?? '');
+  const pytest = words[0] === 'pytest' || (/^python3?$/.test(words[0] ?? '') && words[1] === '-m' && words[2] === 'pytest');
+  const filters = new Set(['--grep', '--fgrep', '--test-name-pattern', ...(mocha ? ['-g', '-f'] : []), ...(pytest ? ['-k'] : [])]);
+  const kept = [];
+  let filter;
+  for (let i = 0; i < words.length; i++) {
+    const [name] = words[i].split('=');
+    if (filters.has(name) && (words[i].includes('=') || i + 1 < words.length)) {
+      filter ??= name;
+      if (!words[i].includes('=')) i++;
+    } else if (!(mocha && ['--invert', '-i'].includes(words[i]))) {
+      kept.push(words[i]);
+    }
+  }
+  if (!filter) return null;
+  if (kept.at(-1) === '--') kept.pop();
+  return {filter, unfiltered: kept.join(' ')};
+}
+
+export const unfilteredTestCommand = command => nameFilter(command)?.unfiltered ?? null;
+
 // Terminal styling and dependency stack frames add nothing for Meta AI.
 // Clean them from the WhatsApp view of tool output; Claude Code keeps the raw text.
 export function readableOutput(text) {

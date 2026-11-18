@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadProjectContext } from '../src/project-context.mjs';
 import { prepare, parseReply } from '../src/protocol.mjs';
+import { unfilteredTestCommand } from '../src/failed-tests.mjs';
 import { WhatsApp } from '../src/whatsapp.mjs';
 
 test('project context identifies the real directory and loads only instruction contents', async () => {
@@ -1440,6 +1441,42 @@ test('an opt-in requirements review follows the first passing test after edits',
   assert.equal(parseReply('Done.', prepare({tools, messages}), {matchedTurn: true}).content[0].type, 'text');
   const second = prepare({tools, messages: [...messages, ...edit('e2'), ...pass('t2')]}, 60000, false, undefined, {reviewAfterPass: true});
   assert.equal(parseReply('Done.', second, {matchedTurn: true}).content[0].type, 'text');
+});
+
+test('a passing test run filtered by name gets one request to run its files unfiltered', () => {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const step = (id, name, input, content, is_error = false) => [
+    {role: 'assistant', content: [{type: 'tool_use', id, name, input}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: id, content, is_error}]}];
+  const edit = id => step(id, 'Edit', {file_path: 'a.js', old_string: 'a', new_string: 'b'}, 'updated');
+  const run = (id, command) => step(id, 'Bash', {command}, '3 passing');
+  const narrowed = "node_modules/.bin/_mocha --reporter dot test/app.use.js --grep 'arrays? of middleware'";
+  const messages = [{role: 'user', content: 'Fix use.'}, ...edit('e1'), ...run('t1', narrowed)];
+  const request = prepare({tools, messages});
+  assert.throws(() => parseReply('Done.', request, {matchedTurn: true}), /only the tests matching --grep ran/);
+  const [rerun] = parseReply('Done.', request, {matchedTurn: true, finalAttempt: true}).content;
+  assert.deepEqual([rerun.name, rerun.input.command], ['Bash', 'node_modules/.bin/_mocha --reporter dot test/app.use.js']);
+  // An unfiltered pass after the filtered one, or no edit at all, needs nothing more.
+  const full = prepare({tools, messages: [...messages, ...run('t2', 'node_modules/.bin/_mocha --reporter dot test/app.use.js')]});
+  assert.equal(parseReply('Done.', full, {matchedTurn: true}).content[0].type, 'text');
+  const unedited = prepare({tools, messages: [{role: 'user', content: 'Check use.'}, ...run('t1', narrowed)]});
+  assert.equal(parseReply('Done.', unedited, {matchedTurn: true}).content[0].type, 'text');
+  // A later edit needs a new check.
+  const again = prepare({tools, messages: [...messages, ...run('t2', 'node_modules/.bin/_mocha test/app.use.js'), ...edit('e2'),
+    ...run('t3', 'node_modules/.bin/_mocha test/app.use.js -g arrays')]});
+  assert.throws(() => parseReply('Done.', again, {matchedTurn: true}), /only the tests matching -g ran/);
+});
+
+test('name filters are removed from test commands word by word', () => {
+  assert.equal(unfilteredTestCommand("mocha x.js --grep 'a '\"'\"'b'\"'\"' c' --reporter dot"), 'mocha x.js --reporter dot');
+  assert.equal(unfilteredTestCommand('mocha x.js --grep=foo -i'), 'mocha x.js');
+  assert.equal(unfilteredTestCommand('node --test --test-name-pattern="merge rows" test/a.test.js'), 'node --test test/a.test.js');
+  assert.equal(unfilteredTestCommand('python3 -m pytest tests/test_a.py -k "parse and not slow"'), 'python3 -m pytest tests/test_a.py');
+  assert.equal(unfilteredTestCommand('npm test -- --grep merge'), 'npm test');
+  // mocha -t is a timeout and pytest -g does not exist: neither is a filter.
+  assert.equal(unfilteredTestCommand('mocha -t 15000 -r should test/a.js'), null);
+  assert.equal(unfilteredTestCommand('pytest -x tests'), null);
+  assert.equal(unfilteredTestCommand('node --test'), null);
 });
 
 test('the worked example appears only when enabled and only for coding requests', () => {

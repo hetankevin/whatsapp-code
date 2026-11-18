@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { testState, testCommand, readableOutput } from './failed-tests.mjs';
+import { testState, testCommand, nameFilter, readableOutput } from './failed-tests.mjs';
 
 export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -745,6 +745,12 @@ function unfinishedWork(messages, reviewAfterPass = false) {
   let editedAfterFailure = false;
   let editedUntested = false;
   let lastFailedTest;
+  // A pass with a name filter checks only the matching tests. Until the
+  // same files pass unfiltered after the latest edit, the change may have
+  // broken their other tests (seen on CLIPPY: the target tests passed under
+  // --grep and two neighbours in the same file failed).
+  let filteredPass;
+  let unfilteredPass = false;
   let last;
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
@@ -760,8 +766,15 @@ function unfinishedWork(messages, reviewAfterPass = false) {
         editedAfterFailure = false;
         const test = testCommand(call);
         if (test) lastFailedTest = last.failed ? {command: call.input.command, description: call.input.description} : undefined;
+        if (test && edited && !last.failed) {
+          const filter = nameFilter(test);
+          if (filter) filteredPass = filter;
+          else unfilteredPass = true;
+        }
       } else if (['Edit', 'Write'].includes(call.name) && !block.is_error) {
         edited = true;
+        filteredPass = undefined;
+        unfilteredPass = false;
         if (failedCommand) editedAfterFailure = true;
         else editedUntested = true;
       }
@@ -774,6 +787,10 @@ function unfinishedWork(messages, reviewAfterPass = false) {
     return lastFailedTest ? {message, rerun: lastFailedTest} : message;
   }
   if (editedUntested) return 'Files changed and no command has run since. Run the project tests to check the change, or give a final answer that says it is untested.';
+  if (filteredPass && !unfilteredPass) {
+    return {message: `That test run passed, but only the tests matching ${filteredPass.filter} ran. Run the same test files without the filter (${filteredPass.unfiltered}) to check that the change broke none of their other tests, then give your final answer.`,
+      rerun: {command: filteredPass.unfiltered, description: 'Run the test files without the name filter'}};
+  }
   // Opt-in (WA_REVIEW_AFTER_PASS=1): passing tests can still miss what the task
   // asks for. On the first pass after edits, ask once for a requirements check.
   if (reviewAfterPass && edited && passesAfterEdit === 1 && last?.name === 'Bash' && !last.failed) {
