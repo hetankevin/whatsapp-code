@@ -37,6 +37,8 @@ Fresh held-out group (CLIPPY era): the eight lowest-numbered Express bugs not us
 
 Final sealed group: the six lowest-numbered unused ESLint bugs and the four lowest-numbered unused hessian.js bugs with exactly one regression test file and a separating upstream fix (ESLint 1, 2, 4, 6, 7, 8; hessian.js 3, 5, 8, 9; hessian.js 1 does not separate). Prepared and preflighted without inspecting the fixes. Its first run (frozen Y) went to the standard backend through a scripting error and is reported apart (see incidents); its CLIPPY measurement is one run on frozen Z2, the first time CLIPPY saw these cases. Later attempts on ESLint 7 and hessian.js 3 are unsealed: Z4 was informed by their failures.
 
+Sealed group for the final revision (Z5): pre-registered in HANDOFF before any run, by the same rule: the lowest-numbered ESLint bugs not used anywhere, with exactly one test file changed between the `Bug-N` and `Bug-N-test` tags and a separating upstream fix: ESLint 9, 11, 12, 14, 16, 17, 18, 20, 21, 23 (ESLint 15 was skipped because its fixed revision fails its own target, and the first spare took its place). Fixtures were prepared outside `/tmp`; no fix or test content was inspected; run once on Z5 with no gateway change after preparation.
+
 Long session: `synth-six` puts all six middle-tier modules (below) in one project with one task: fix all six, testing after each, then a `--resume` follow-up that reruns the tests. Validated: the buggy project fails 12 visible tests, the reference passes all 14, and each held-out judge passes the reference and fails the buggy code.
 
 Chained session: `chain-six` uses the same project, but hands over the modules one at a time in one native session: the first task, then five `--resume` follow-ups ("Next: (2) ...", each asking for `node --test` after the fix), then a last follow-up: "Run exactly: node --test. If anything fails, fix it and run it again, then summarize what changed in this session." It is scored like the long session, after the last follow-up.
@@ -98,7 +100,8 @@ Run one batch at a time: the gateway serializes requests through one WhatsApp ch
 
 | Evidence (CLIPPY) | Result |
 |---|---|
-| Final sealed group: 10 BugsJS bugs in ESLint and hessian.js never used before, first CLIPPY contact, frozen Z2 | **8/10** (median 51 s); both failures ended on a reply that only announced its next step |
+| Sealed group for the final revision: 10 ESLint bugs never used before, pre-registered, first contact, frozen Z5 | **10/10** (median 52 s; 15-210 s; 105 CLIPPY replies) |
+| Final sealed group: 10 BugsJS bugs in ESLint and hessian.js never used before, first CLIPPY contact, frozen Z2 | **8/10** (median 51 s); both failures ended on a reply that only announced its next step (fixed in Z4; those cases then passed 6/6, unsealed) |
 | Fresh sealed group: 7 never-used Express bugs, first contact, S | 5/7 (both failures were 413s fixed in V) |
 | Original sealed holdouts (7 bugs), first complete CLIPPY run, S | 4/7 |
 | BugsJS dev cases (7), regression passes on Z2 / Z4 / Z5 | 7/7 / 6/7 / 7/7 (the Z4 failure was a WhatsApp drop during a send after a correct edit; fixed in Z5, and that case then passed 3/3) |
@@ -166,6 +169,7 @@ Per task (LLAMA_PROD / CLIPPY): deep merge 2/4 and 4/4, intervals 0/4 and 4/4, L
 | Dev regression pass | Z4 | 7 | **6** | 7 | |
 | Express 17 (the Z4 dev failure), two attempts | Z5 4fe4ed2 | 2 | **2** | 2 | |
 | Dev regression pass | Z5 | 7 | **7** | 7 | |
+| **Sealed group for the final revision** (ESLint 9, 11, 12, 14, 16, 17, 18, 20, 21, 23), pre-registered, first contact, run once | Z5 4fe4ed2 | 10 | **10** | 10 | |
 
 The final sealed group's first run (on Y) went to the standard backend through a scripting error: 1 of 10, not a CLIPPY result (see incidents). In the final sealed run every one of the 94 replies came from CLIPPY.
 
@@ -381,8 +385,8 @@ Baseline failures were classified by layer and fixed at the layer they came from
 
 - One linked account, one bot address, one machine. Meta AI's backends are not versioned and can change without notice; CLIPPY is reached through a client capability Meta could stop honoring.
 - Quota: about 830 CLIPPY replies a day per account, plus short silences after heavy hourly use. Beyond it, sessions continue on the standard backend at much lower quality.
-- Each case ran once to a few times per revision, so differences of one or two attempts are within noise. The sealed groups (7 fresh Express bugs, 10 ESLint and hessian.js bugs) are the least biased numbers; reruns after a fix informed by a failure are labeled unsealed.
-- The tasks are real single-bug repairs in three JavaScript projects and small synthetic modules. Feature work, refactoring, other languages, and very large repositories were not measured.
+- Each case ran once to a few times per revision, so differences of one or two attempts are within noise. The sealed groups (7 fresh Express bugs on S, 10 ESLint and hessian.js bugs on Z2, 10 ESLint bugs on Z5) are the least biased numbers; reruns after a fix informed by a failure are labeled unsealed. The Z5 sealed group is one project (ESLint), each bug with a single regression test file, so 10/10 there does not carry over to every kind of repository change.
+- The tasks are real single-bug repairs in three JavaScript projects (some needing edits in two files), small synthetic modules, and one small feature (the CSV parser). Larger feature work, refactoring, other languages, and very large repositories were not measured.
 
 ## Next steps
 
