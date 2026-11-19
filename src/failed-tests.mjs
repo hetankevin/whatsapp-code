@@ -1,16 +1,54 @@
 // Track test failures within the current user task.
 const READ_ONLY = new Set(['Read', 'Glob', 'Grep']);
 
+const TEST_RUNNER = '(?:node[ \\t]+--test|(?:npm|pnpm|yarn)[ \\t]+test|(?:\\.\\/)?node_modules\\/\\.bin\\/_?mocha|mocha|pytest|python3?[ \\t]+-m[ \\t]+pytest)';
+
+// The part of a command the shell interprets: single-quoted text is literal,
+// so it is dropped. Escaped characters and double-quoted text are kept.
+function shellActive(command) {
+  let out = '';
+  for (let i = 0, quote = ''; i < command.length; i++) {
+    const ch = command[i];
+    if (quote === "'") { if (ch === "'") quote = ''; continue; }
+    if (ch === '\\') { out += ch + (command[i + 1] ?? ''); i++; continue; }
+    if (ch === "'" && !quote) { quote = "'"; continue; }
+    if (ch === '"') quote = quote ? '' : '"';
+    out += ch;
+  }
+  return out;
+}
+
 export function testCommand(tool, configuredCommand) {
   if (tool?.name !== 'Bash' || typeof tool.input?.command !== 'string') return null;
   const command = tool.input.command.trim();
   if (command === configuredCommand) return command;
   // Only recognize standalone test invocations. Shell pipelines and compound
   // commands can change the workspace, so they clear prior test failures.
-  if (/[;&|<>()\x60$\r\n]/.test(command)) return null;
-  return /^(?:node[ \t]+--test|(?:npm|pnpm|yarn)[ \t]+test|(?:\.\/)?node_modules\/\.bin\/_?mocha|mocha|pytest|python3?[ \t]+-m[ \t]+pytest)(?:[ \t]|$)/.test(command)
-    ? command
-    : null;
+  // A quoted name filter such as --grep 'a|b' is still one test run.
+  if (/[;&|<>()\x60$\r\n]/.test(shellActive(command))) return null;
+  return new RegExp('^' + TEST_RUNNER + '(?:[ \\t]|$)').test(command) ? command : null;
+}
+
+// The test command a task names, such as "then run exactly: npm test" or
+// "run `pytest -q`": a standalone test invocation in backticks, after a colon
+// at the end of a line, or alone on a line. Prose after a command on the same
+// line ("run npm test and fix it") is not a command, so it is not matched.
+// Returns the last one found, or null.
+export function namedTestCommand(text) {
+  if (typeof text !== 'string') return null;
+  let found = null;
+  for (const line of text.split('\n')) {
+    const candidates = [...line.matchAll(/\x60([^\x60\n]+)\x60/g)].map(match => match[1].trim());
+    if (!line.includes('\x60')) {
+      for (const match of line.trim().matchAll(/(?:^|:[ \t]+)(?=\S)/g)) {
+        candidates.push(line.trim().slice(match.index + match[0].length).replace(/(?<=\S)[.,;]$/, ''));
+      }
+    }
+    for (const command of candidates) {
+      if (new RegExp('^' + TEST_RUNNER + '(?:[ \\t]|$)').test(command) && testCommand({name: 'Bash', input: {command}})) found = command;
+    }
+  }
+  return found;
 }
 
 // Terminal styling and dependency stack frames add nothing for Meta AI.
