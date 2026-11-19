@@ -77,6 +77,10 @@ def run_cmd(project, cmd, log, timeout=120):
     # file. Strip them, or failing titles (and regressions) go unseen.
     data = re.sub(r'\x1b\[[0-9;]*m', '', log.read_text(errors='replace'))
     count = lambda word: int((re.findall(r'(\d+) ' + word, data) or ['0'])[-1])
+    if re.search(r'^=*\s*(\d+ (passed|failed|errors?)\b|no tests ran).* in [\d.]+s', data, re.M):  # pytest summary
+        num = lambda word: int((re.findall(r'(\d+) ' + word + r'\b', data) or ['0'])[-1])
+        return {'code': child.returncode, 'passing': num('passed'), 'failing': num('failed') + num('errors?'),
+                'failure_titles': sorted(set(re.findall(r'^(?:FAILED|ERROR) (\S+)', data, re.M)))}
     if re.search(r'^# (pass|fail) \d+', data, re.M):  # node --test TAP output
         tap = lambda word: int((re.findall(r'^# ' + word + r' (\d+)', data, re.M) or ['0'])[-1])
         return {'code': child.returncode, 'passing': tap('pass'), 'failing': tap('fail'),
@@ -88,7 +92,7 @@ def run_cmd(project, cmd, log, timeout=120):
 def preflight(case, out):
     # Check the fixture on every run, not only before the first preflight: files can disappear later.
     for key in ('test_dir', 'full_dir'):
-        if not any(Path(case[key]).iterdir()) or not (Path(case[key]) / 'package.json').exists():
+        if not any(Path(case[key]).iterdir()) or not any((Path(case[key]) / f).exists() for f in ('package.json', 'pyproject.toml')):
             raise SystemExit(f"fixture {case['id']} {key} is empty or damaged: {case[key]}")
     # A missing check script fails every candidate (it once vanished in a /tmp cleanup).
     for cmd in case.get('extra', []):
