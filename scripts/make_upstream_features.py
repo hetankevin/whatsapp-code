@@ -77,7 +77,11 @@ def build(repo, root):
         # still runs the whole suite and is scored against the reference.
         broken = reference_failures(full, target)
         if broken:
-            target = target + ['--grep', '|'.join(re.escape(title) for title in broken), '--invert']
+            # Every character other than a letter, digit or space becomes "." rather than a
+            # backslash escape: Claude Code 2.1.328 in dontAsk mode denies some quoted escapes
+            # (such as 'execute\(\)\ should') whatever the allow rules say.
+            pattern = '|'.join(re.sub(r'[^A-Za-z0-9 ]', '.', title) for title in broken)
+            target = target + ['--grep', pattern, '--invert']
         manifest.append({'id': case_id, 'group': 'feature-upstream', 'test_dir': str(start), 'full_dir': str(full),
                          'cmd': target, 'broader': target, 'preserve': MOCHA + ['--recursive', 'tests/lib'],
                          'excluded_from_target': broken, 'task': task_text(repo, commit)})

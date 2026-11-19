@@ -69,10 +69,13 @@ def write_atomic(path, text):
 
 def stable_titles(project, titles):
     # Some titles embed absolute paths under the temporary checkout, which differ on every run.
+    # Longest spelling first: /var/... is a substring of its realpath /private/var/..., so the
+    # other order leaves "/private<tmp>" (revision 9 iterated a set, whose order varies by process).
     project = Path(project)
-    for path, mark in ((project, '<project>'), (project.parent, '<tmp>')):
-        for form in {str(path), os.path.realpath(path)}:
-            titles = [t.replace(form, mark) for t in titles]
+    forms = {(form, mark) for path, mark in ((project, '<project>'), (project.parent, '<tmp>'))
+             for form in (str(path), os.path.realpath(path))}
+    for form, mark in sorted(forms, key=lambda pair: -len(pair[0])):
+        titles = [t.replace(form, mark) for t in titles]
     return sorted(set(titles))
 
 
@@ -129,7 +132,11 @@ def preflight(case, out):
                 raise SystemExit(f"fixture {case['id']} extra check is missing: {arg}")
     cache = out / (f"preflight-{case['id']}.json" if SCORER_REVISION < 5 else f"preflight-v{SCORER_REVISION}-{case['id']}.json")
     if cache.exists():
-        return json.loads(cache.read_text())
+        cached = json.loads(cache.read_text())
+        # A manifest command changed since this was cached: the cache no longer describes the case.
+        if cached.get('commands', {'cmd': case['cmd'], 'broader': case['broader']}) != {'cmd': case['cmd'], 'broader': case['broader']}:
+            raise SystemExit(f"case {case['id']} commands changed since {cache.name} was written; move it aside to recompute")
+        return cached
     with tempfile.TemporaryDirectory(prefix='wa-eval-pre-') as tmp:
         result = {}
         for rev in ('test', 'full'):
@@ -140,6 +147,7 @@ def preflight(case, out):
             result[rev] = {'target': run_cmd(project, case['cmd'], out / f"pre-{case['id']}-{rev}-target.log"),
                            'broader': run_cmd(project, case['broader'], out / f"pre-{case['id']}-{rev}-broader.log")}
     result['valid'] = result['test']['target']['code'] not in (0, None) and result['full']['target']['code'] == 0
+    result['commands'] = {'cmd': case['cmd'], 'broader': case['broader']}
     write_atomic(cache, json.dumps(result, indent=2) + '\n')
     return result
 
@@ -154,11 +162,12 @@ def events_of(lines):
 
 def analyse(events, cmd):
     calls, results = {}, []
-    denials = 0
+    denials, denied_ids = 0, set()
     for idx, event in enumerate(events):
         message = event.get('message')
         if event.get('subtype') == 'permission_denied':
             denials += 1
+            denied_ids.add(event.get('tool_use_id'))
         # Some system events (for example permission_denied) carry a string message.
         content = message.get('content') if isinstance(message, dict) else None
         if not isinstance(content, list):
@@ -187,6 +196,9 @@ def analyse(events, cmd):
         'native_test_pass_after_edit': bool(edits) and any(i > max(edits) and not b.get('is_error') for i, b in tests),
         'read_limits': [c['input'].get('limit') for c in calls.values() if c['name'] == 'Read'],
         'permission_denials': denials,
+        # The harness allows the exact target command; a denial of it is a harness defect
+        # (FEAT-Z5, November 19), not a model failure.
+        'target_denied': any(is_target(calls.get(i, {})) for i in denied_ids),
     }
 
 
@@ -380,7 +392,9 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
 
 # 9: test titles that contain the scoring checkout's temporary path are normalized, so the same
 # test keeps the same title across runs (some ESLint titles embed resolved paths).
-SCORER_REVISION = 9
+# 10: that normalization replaces the longest path spelling first, so it no longer depends on
+# Python's per-process set order.
+SCORER_REVISION = 10
 
 
 
@@ -654,6 +668,9 @@ def main():
                           passed=passed, gateway=gateway_log_delta(args.gateway_log, log_start),
                           backends=backends_since(replies_at))
             Path(stem + '.json').write_text(json.dumps(report, indent=2) + '\n')
+            if facts['target_denied']:
+                print('STOP: Claude Code denied the exact target command in', case['id'], k, '(harness defect)', flush=True)
+                sys.exit(4)
             print('result', case['id'], k, 'PASS' if passed else 'fail', run['seconds'], 's',
                   'edits', facts['edits_ok'], 'tests', facts['native_tests'], 'target', judged.get('target_pass'),
                   'parity', judged.get('parity'), 'preserve', (judged.get('preserve') or {}).get('ok'),
