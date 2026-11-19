@@ -67,6 +67,15 @@ def write_atomic(path, text):
     temp.write_text(text)
     os.replace(temp, path)
 
+def stable_titles(project, titles):
+    # Some titles embed absolute paths under the temporary checkout, which differ on every run.
+    project = Path(project)
+    for path, mark in ((project, '<project>'), (project.parent, '<tmp>')):
+        for form in {str(path), os.path.realpath(path)}:
+            titles = [t.replace(form, mark) for t in titles]
+    return sorted(set(titles))
+
+
 def run_cmd(project, cmd, log, timeout=120):
     try:
         with log.open('w') as out:
@@ -80,13 +89,13 @@ def run_cmd(project, cmd, log, timeout=120):
     if re.search(r'^=*\s*(\d+ (passed|failed|errors?)\b|no tests ran).* in [\d.]+s', data, re.M):  # pytest summary
         num = lambda word: int((re.findall(r'(\d+) ' + word + r'\b', data) or ['0'])[-1])
         return {'code': child.returncode, 'passing': num('passed'), 'failing': num('failed') + num('errors?'),
-                'failure_titles': sorted(set(re.findall(r'^(?:FAILED|ERROR) (\S+)', data, re.M)))}
+                'failure_titles': stable_titles(project, re.findall(r'^(?:FAILED|ERROR) (\S+)', data, re.M))}
     if re.search(r'^# (pass|fail) \d+', data, re.M):  # node --test TAP output
         tap = lambda word: int((re.findall(r'^# ' + word + r' (\d+)', data, re.M) or ['0'])[-1])
         return {'code': child.returncode, 'passing': tap('pass'), 'failing': tap('fail'),
-                'failure_titles': sorted(set(re.findall(r'^\s*not ok \d+ - ([^\n]+)', data, re.M)))}
+                'failure_titles': stable_titles(project, re.findall(r'^\s*not ok \d+ - ([^\n]+)', data, re.M))}
     return {'code': child.returncode, 'passing': count('passing'), 'failing': count('failing'),
-            'failure_titles': sorted(set(re.findall(r'^\s*\d+\) ([^\n]+)', data, re.M)))}
+            'failure_titles': stable_titles(project, re.findall(r'^\s*\d+\) ([^\n]+)', data, re.M))}
 
 
 def fixture_size(path):
@@ -369,7 +378,9 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
                 events=events, session=session, error=error, final=final[:300])
 
 
-SCORER_REVISION = 8
+# 9: test titles that contain the scoring checkout's temporary path are normalized, so the same
+# test keeps the same title across runs (some ESLint titles embed resolved paths).
+SCORER_REVISION = 9
 
 
 
