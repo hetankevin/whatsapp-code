@@ -113,6 +113,7 @@ Run one batch at a time: the gateway serializes requests through one WhatsApp ch
 | Six-module single session with a `--resume` follow-up, Z2 | 2/2 (about 95 s each) |
 | Six modules handed over one per turn through six `--resume` follow-ups, Z2 / Z3 / Z4 | 2/2 / 2/2 / 2/2 (200-250 s each on Z3-Z4, no test loop) |
 | Eight tasks (six fixes, the TTL fix, the CSV parser feature) handed over one per turn in one native session, Z4 / Z6 | 2/2 (285 and 320 s); each session compacted natively once and finished after resuming / 1/1 (297 s; Z6 differs from Z5 only on filtered test runs, which this session never used) |
+| Wider work, Z5: a JavaScript feature across four modules, a JavaScript refactor into a shared module, Python fixes across modules, a Python feature across three modules; held-out judges | **8/8** (two each; 20-101 s; 72 CLIPPY replies) |
 | Meta AI's think-hard mode on top of CLIPPY, A-B-B-A on Express 23, ESLint 12, ESLint 17, Z5 | think-hard 2/6 vs default 5/6; stays off |
 | The three sealed-group and holdout stalls (announced next step), same cases rerun on Z4 | 6/6 |
 | Plain Q&A; interactive terminal; fresh bot session per task (empty chat) | 6/6; 2/2; 12/12 (same as the shared chat) |
@@ -211,6 +212,19 @@ Failures on CLIPPY, by cause:
 | Plain Q&A | 6/6, including the `[[1,[2]],3].flat()` question every LLAMA_PROD batch got wrong |
 | Eight tasks one per turn (`chain-eight`: the six modules, the TTL cache fix, the CSV parser feature; eight `--resume` follow-ups), Z4 | 2/2 (285 and 320 s, nine edits each). Each session compacted natively once at the default 50,000-token window and finished after it. Round 2's final summary said nothing had changed "in this session", describing only the last turn; the code was correct. |
 | Fresh clone: `npm ci`, launcher, live reply | works: a new clone from GitHub at 9f4fbf0 (gateway source identical to Z5) installs with `npm ci`, builds the Go transport from source (vet clean), passes all 101 unit tests and the five Claude Code smoke tests, and its launcher gets a live reply ("Hello", 3 s). The same held for a clone at 3ab597b (Z4 source). |
+
+### Wider tasks (Z5, CLIPPY)
+
+`scripts/make_wide.py` builds four projects that need more than a one-line repair, each with visible tests and a held-out judge run as an extra check by the same scorer; only existing files need changing, as the scorer requires. Validated before the run: every starting project fails its visible tests and its judge, and every reference passes both and scores correct under the real scorer. Pre-registered in HANDOFF; two attempts each on Z5, 600 s budget (features need more than 300 s).
+
+| Task | What it needs | Result |
+|---|---|---|
+| `due` (JavaScript) | Due dates across store, filter, formatter and CLI: date validation, an overdue filter with edge cases, output markers, two new CLI flags | 2/2 (101 and 46 s; 14 and 4 edits) |
+| `slugs` (JavaScript) | Refactor three inconsistent private slug implementations into one shared `slugify`, keeping each module's exports and one module's fallback; the judge also checks that each module imports the shared function and has no private copy left | 2/2 (26 and 23 s) |
+| `invoice` (Python) | Discount before tax, Decimal half-up rounding of each step, the total as a sum of rounded lines, a ValueError for unknown regions, `$1,234.50` and `-$5.00` formatting | 2/2 (20 and 31 s) |
+| `grades` (Python) | `median` and `letter` in one module, a new report format in another, parse validation with 1-based line numbers counting blank lines in a third | 2/2 (23 and 22 s) |
+
+The scorer reads pytest summaries for the Python tasks (mocha and node TAP parsing are unchanged). These are small projects (three to five modules); they show that multi-file features, a refactor and Python work go through the same path, not how far it scales.
 
 ### Narrowed verification (Z6, not adopted)
 
@@ -404,11 +418,11 @@ Baseline failures were classified by layer and fixed at the layer they came from
 - One linked account, one bot address, one machine. Meta AI's backends are not versioned and can change without notice; CLIPPY is reached through a client capability Meta could stop honoring.
 - Quota: about 830 CLIPPY replies a day per account, plus short silences after heavy hourly use. Beyond it, sessions continue on the standard backend at much lower quality.
 - Each case ran once to a few times per revision, so differences of one or two attempts are within noise. The sealed groups (7 fresh Express bugs on S, 10 ESLint and hessian.js bugs on Z2, 10 ESLint bugs on Z5) are the least biased numbers; reruns after a fix informed by a failure are labeled unsealed. The first Z5 sealed group is one project (ESLint), each bug with a single regression test file; the second (9/9) spans Express, hessian.js and ESLint with up to two test files per bug. Neither covers larger changes.
-- The tasks are real single-bug repairs in three JavaScript projects (some needing edits in two files), small synthetic modules, and one small feature (the CSV parser). Larger feature work, refactoring, other languages, and very large repositories were not measured.
+- The tasks are real single-bug repairs in three JavaScript projects (some needing edits in two files), small synthetic modules, one small feature (the CSV parser), and the wider set: two multi-module features, one refactor, and Python fixes, all in small projects of three to five modules. Large features, large refactors, other languages besides JavaScript and Python, and very large repositories were not measured.
 
 ## Next steps
 
 - **Quota-aware use.** A per-user daily budget and a clearer warning before CLIPPY goes quiet would help heavy users; the gateway already detects the silence and falls back.
 - **Wrong patches.** Patches that pass the filtered target command the prompt asks for but break a neighbouring test (Express 23 on Q, S and T). A prompt that asks for the target command and then the whole test file is the more direct change, but it would change every BugsJS comparison and needs its own matched arm. Asking for an unfiltered rerun (Z6) hurt a case whose files already fail in this environment; a version that separates pre-existing failures (for example, by running the files once before the first edit) would need its own matched arm.
-- **Wider tasks.** Add feature and refactoring tasks and a non-JavaScript project to see where usefulness ends.
+- **Wider tasks.** The small-project feature, refactor and Python tasks passed 8/8; the next step is larger projects (tens of files, real dependencies) to see where usefulness ends.
 - **Muse.** Not pursued (owner's decision). Sends to the Muse bot still fail on this linked device with "no active WASA root secret".
