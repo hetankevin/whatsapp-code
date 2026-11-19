@@ -89,11 +89,30 @@ def run_cmd(project, cmd, log, timeout=120):
             'failure_titles': sorted(set(re.findall(r'^\s*\d+\) ([^\n]+)', data, re.M)))}
 
 
+def fixture_size(path):
+    files = size = 0
+    for root, dirs, names in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in ('node_modules', '.git', '__pycache__')]
+        files += len(names)
+        size += sum(os.path.getsize(os.path.join(root, n)) for n in names if not os.path.islink(os.path.join(root, n)))
+    return {'files': files, 'bytes': size}
+
+
 def preflight(case, out):
     # Check the fixture on every run, not only before the first preflight: files can disappear later.
     for key in ('test_dir', 'full_dir'):
         if not any(Path(case[key]).iterdir()) or not any((Path(case[key]) / f).exists() for f in ('package.json', 'pyproject.toml')):
             raise SystemExit(f"fixture {case['id']} {key} is empty or damaged: {case[key]}")
+    # The macOS /tmp cleaner deletes files nobody has opened for three days, and clone copies
+    # never open the originals, so a fixture can lose files between batches and then simply run
+    # fewer tests. Record each fixture's size the first time and refuse to run if it changes.
+    record = out / f"fixture-{case['id']}.json"
+    sizes = {key: {'path': case[key], **fixture_size(case[key])} for key in ('test_dir', 'full_dir')}
+    known = json.loads(record.read_text()) if record.exists() else {}
+    for key, now in sizes.items():
+        if known.get(key, {}).get('path') == now['path'] and known[key] != now:
+            raise SystemExit(f"fixture {case['id']} {key} changed since it was first checked: {known[key]} -> {now}")
+    write_atomic(record, json.dumps({**known, **sizes}, indent=1) + '\n')
     # A missing check script fails every candidate (it once vanished in a /tmp cleanup).
     for cmd in case.get('extra', []):
         for arg in cmd:

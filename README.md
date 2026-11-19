@@ -21,7 +21,7 @@ The transport uses [whatsmeow](https://github.com/tulir/whatsmeow), an **unoffic
 
 ## Setup
 
-Install from source with Node 22+, Go 1.26+, a C compiler (for SQLite), Claude Code on PATH, and WhatsApp with Meta AI available. The build creates `bin/whatsapp-transport`. The launcher uses the local gateway token, so inference requires only the linked WhatsApp account. Tested locally with Claude Code 2.1.322, Node 22.23.2, and Go 1.26.11 on macOS arm64. Go is not preinstalled on macOS; install it or set GO_BINARY to a downloaded toolchain. A fresh clone, `npm ci`, build, `go vet`, and the unit tests took about 40 seconds.
+Install from source with Node 22+, Go 1.26+, a C compiler (for SQLite), Claude Code on PATH, and WhatsApp with Meta AI available. The build creates `bin/whatsapp-transport`. The launcher uses the local gateway token, so inference requires only the linked WhatsApp account. Tested locally with Claude Code 2.1.322 through 2.1.328, Node 22.23.2, and Go 1.26.11 on macOS arm64. Go is not preinstalled on macOS; install it or set GO_BINARY to a downloaded toolchain. A fresh clone, `npm ci`, build, `go vet`, and the unit tests took about 40 seconds.
 
     git clone https://github.com/hetankevin/whatsapp-code.git
     cd whatsapp-code
