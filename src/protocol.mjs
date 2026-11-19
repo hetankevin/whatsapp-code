@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { testState, testCommand, namedTestCommand, readableOutput } from './failed-tests.mjs';
+import { testState, testCommand, namedTestCommand, nameFilter, failureTitles, readableOutput } from './failed-tests.mjs';
 
 export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -469,7 +469,7 @@ function changedLines(before, after) {
   };
 }
 
-function content(blocks, readIds, snapshots, editedView) {
+function content(blocks, readIds, snapshots, editedView, notes) {
   if (typeof blocks === 'string') return blocks;
   if (!Array.isArray(blocks)) throw new GatewayError('Expected text or content blocks.');
   return blocks.map(b => {
@@ -492,7 +492,7 @@ function content(blocks, readIds, snapshots, editedView) {
           ? withoutReadLabels(result)
           : result.map(block => block.type === 'text' ? {...block, text: withoutReadLabels(block.text)} : block);
       }
-      const view = !b.is_error && editedView?.(b.tool_use_id);
+      const view = [!b.is_error && editedView?.(b.tool_use_id), notes?.get(b.tool_use_id)].filter(Boolean).join('\n');
       if (view) {
         result = typeof result === 'string' ? result + '\n' + view
           : [...result, {type: 'text', text: view}];
@@ -737,7 +737,7 @@ function latestTaskIndex(messages) {
 
 // Native results show whether the latest command failed, or whether files
 // changed after a failed command without a later run.
-function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined) {
+function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined, baselines = new Map()) {
   const calls = new Map();
   let edited = false;
   let passesAfterEdit = 0;
@@ -745,6 +745,11 @@ function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined
   let editedAfterFailure = false;
   let editedUntested = false;
   let lastFailedTest;
+  // A pass with a name filter checks only the matching tests. When the same
+  // files ran unfiltered before the task's first edit, ask for them again
+  // after the filtered pass, and judge that run against the earlier one.
+  let filteredPass;
+  let unfilteredPass = false;
   let last;
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
@@ -755,13 +760,26 @@ function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined
       if (!call) continue;
       last = {name: call.name, failed: Boolean(block.is_error)};
       if (call.name === 'Bash') {
-        if (edited && !last.failed && testCommand(call)) passesAfterEdit++;
+        const test = testCommand(call);
+        if (test && edited) {
+          const filter = nameFilter(test);
+          if (filter && !last.failed && baselines.has(filter.unfiltered)) filteredPass = filter;
+          else if (filteredPass && test === filteredPass.unfiltered) {
+            // The filtered tests passed since the latest edit; failures that
+            // all failed before the first edit too are not this change's.
+            const titles = failureTitles(block.content);
+            if (last.failed && titles.length && titles.every(title => baselines.get(test).has(title))) last.failed = false;
+            if (!last.failed) unfilteredPass = true;
+          } else if (!filter && !last.failed) unfilteredPass = true;
+        }
+        if (edited && !last.failed && test) passesAfterEdit++;
         failedCommand = last.failed;
         editedAfterFailure = false;
-        const test = testCommand(call);
         if (test) lastFailedTest = last.failed ? {command: call.input.command, description: call.input.description} : undefined;
       } else if (['Edit', 'Write'].includes(call.name) && !block.is_error) {
         edited = true;
+        filteredPass = undefined;
+        unfilteredPass = false;
         if (failedCommand) editedAfterFailure = true;
         else editedUntested = true;
       }
@@ -778,11 +796,55 @@ function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined
     // When the task names its test, a final claim runs that test instead.
     return namedTest ? {message, rerun: namedTest} : message;
   }
+  if (filteredPass && !unfilteredPass) {
+    return {message: `That test run passed, but only the tests matching ${filteredPass.filter} ran. Run the same test files without the filter (${filteredPass.unfiltered}) to check that the change broke none of their other tests; failures that also happened before your first edit will be marked as such. Then give your final answer.`,
+      rerun: {command: filteredPass.unfiltered, description: 'Run the test files without the name filter'}};
+  }
   // Opt-in (WA_REVIEW_AFTER_PASS=1): passing tests can still miss what the task
   // asks for. On the first pass after edits, ask once for a requirements check.
   if (reviewAfterPass && edited && passesAfterEdit === 1 && last?.name === 'Bash' && !last.failed) {
     return 'The test passed. Before you finish, list each requirement and edge case the task states and check the current code against each one. If any is not handled, fix it and run the test again; otherwise give your final answer.';
   }
+}
+
+// Test runs from before the task's first edit, by exact command, with their
+// failing test names; notes that compare later runs of the same command with
+// them; and, when the task names a name-filtered test command whose unfiltered
+// form has not run yet, that run, to add before the first edit. Some suites
+// already fail in a given environment; a session that chases those failures
+// breaks working code (Z6 on ESLint 10), so later failures are told apart.
+function filteredBaseline(messages, namedTest, validators) {
+  const calls = new Map(), baselines = new Map(), notes = new Map(), later = [];
+  let edited = false;
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block.type === 'tool_use') calls.set(block.id, block);
+      if (block.type !== 'tool_result') continue;
+      const call = calls.get(block.tool_use_id);
+      if (!call) continue;
+      if (['Edit', 'Write'].includes(call.name) && !block.is_error) edited = true;
+      const test = call.name === 'Bash' ? testCommand(call) : null;
+      if (!test) continue;
+      if (!edited) {
+        baselines.set(test, new Set(failureTitles(block.content)));
+        if (call.id?.startsWith('toolu_base_')) {
+          notes.set(call.id, 'The gateway ran this before your first edit to record which tests already fail; it shows the code before your changes.');
+        }
+      } else if (block.is_error && baselines.has(test)) later.push({id: call.id, test, block});
+    }
+  }
+  for (const {id, test, block} of later) {
+    const titles = failureTitles(block.content);
+    if (!titles.length) continue;
+    const fresh = titles.filter(title => !baselines.get(test).has(title));
+    notes.set(id, `Compared with the same command before this task's first edit: ${titles.length - fresh.length} of these ${titles.length} failing tests failed then too` +
+      (fresh.length ? `; new since then: ${fresh.slice(0, 10).join('; ')}` : '; none is new') + '.');
+  }
+  const filter = namedTest && nameFilter(namedTest.command);
+  const run = filter && {command: filter.unfiltered, description: 'Record which tests fail before the first edit'};
+  const baselineRun = run && !edited && !baselines.has(filter.unfiltered) && validators.get('Bash')?.(run) ? run : undefined;
+  return {baselines, baselineRun, notes};
 }
 
 function latestToolStatus(messages, configuredCommand) {
@@ -1042,6 +1104,12 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   // Use the usual context when there is no standalone user task to anchor the snapshot.
   const useSnapshot = Boolean(snapshotContext || editFiles) && taskIndex >= 0;
   const taskMessages = taskIndex >= 0 ? transcript.slice(taskIndex) : transcript;
+  // The test command the task's own request names, if any ("then run: npm test").
+  const taskText = taskIndex >= 0 ? (typeof transcript[taskIndex].content === 'string' ? transcript[taskIndex].content
+    : transcript[taskIndex].content.filter(block => block.type === 'text').map(block => block.text).join('\n')) : '';
+  const named = namedTestCommand(taskText);
+  const namedTest = named ? {command: named} : undefined;
+  const {baselines, baselineRun, notes: testNotes} = filteredBaseline(taskMessages, namedTest, validators);
   const readMessages = useSnapshot || editOptions.command ? taskMessages : transcript;
   const reads = rangeEnabled ? trackReads(readMessages, Boolean(editOptions.command && !editFiles && !useSnapshot),
     !editOptions.command && !editFiles && !useSnapshot) : new Map();
@@ -1088,7 +1156,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
         if (block.type === 'tool_use' && block.name === 'Read') readIds.add(block.id);
       }
     }
-    return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined, snapshots, editedView)};
+    return {role: m.role, content: content(m.content, m.role === 'user' ? readIds : undefined, snapshots, editedView, testNotes)};
   });
   const model = body.model ?? 'meta-ai-whatsapp';
   if (choice.type === 'auto' && !editFiles) {
@@ -1372,13 +1440,8 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   const taskUsedTools = !editFiles && !textOnly && taskIndex >= 0 &&
     taskMessages.some(message => Array.isArray(message.content) && message.content.some(block => block.type === 'tool_use'));
-  // The test command the task's own request names, if any ("then run: npm test").
-  const taskText = taskIndex >= 0 ? (typeof transcript[taskIndex].content === 'string' ? transcript[taskIndex].content
-    : transcript[taskIndex].content.filter(block => block.type === 'text').map(block => block.text).join('\n')) : '';
-  const named = namedTestCommand(taskText);
-  const namedTest = named ? {command: named} : undefined;
   const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
-    ? unfinishedWork(taskMessages, Boolean(editOptions.reviewAfterPass), namedTest) : undefined;
+    ? unfinishedWork(taskMessages, Boolean(editOptions.reviewAfterPass), namedTest, baselines) : undefined;
   // The last test command run in this task, and whether the workspace
   // changed after it (a successful Edit or Write).
   let lastTest, changedSinceTest = false;
@@ -1418,7 +1481,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     sessionKey = createHash('sha256').update(JSON.stringify(first?.content ?? '')).digest('hex').slice(0, 32);
   }
   return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, testPasses, taskUsedTools, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
-    lastTest, changedSinceTest, namedTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
+    lastTest, changedSinceTest, namedTest, baselineRun: choice.type === 'auto' && !editFiles && taskIndex >= 0 ? baselineRun : undefined, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars, fullChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -1654,7 +1717,18 @@ function parseSearchReplace(text, request, finalAttempt) {
   return {content};
 }
 
-export function parseReply(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
+export function parseReply(raw, request, options = {}) {
+  const reply = parseReplyBlocks(raw, request, options);
+  // The task names a name-filtered test: run its files unfiltered before the
+  // first edit, so failures after the edit can be compared with that run.
+  const run = request.baselineRun;
+  if (run && reply?.content?.some(block => block.type === 'tool_use' && ['Edit', 'Write'].includes(block.name))) {
+    return {...reply, content: [{type: 'tool_use', id: 'toolu_base_' + randomBytes(12).toString('hex'), name: 'Bash', input: {...run}}, ...reply.content]};
+  }
+  return reply;
+}
+
+function parseReplyBlocks(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
   // The frame template reads EDIT READ_ID START END_LINE. A reply that keeps
   // the READ_ID label before the real id and range means the same frame.
   const original = raw.trim().replace(/^([ \t]*EDIT)[ \t]+READ_ID[ \t]*[:=]?[ \t]+(?=\S+[ \t]+\d+[ \t]+\d+[ \t]*$)/gm, '$1 ');

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadProjectContext } from '../src/project-context.mjs';
 import { prepare, parseReply } from '../src/protocol.mjs';
-import { testCommand, namedTestCommand } from '../src/failed-tests.mjs';
+import { testCommand, namedTestCommand, nameFilter, failureTitles } from '../src/failed-tests.mjs';
 import { WhatsApp } from '../src/whatsapp.mjs';
 
 test('project context identifies the real directory and loads only instruction contents', async () => {
@@ -1660,4 +1660,68 @@ test('a one-line placeholder over a long range reads those lines instead of edit
   }
   const [edit] = parseReply('EDIT ' + id + ' 3 5\n  done();\nEND', request, {matchedTurn:true}).content;
   assert.equal(edit.name, 'Edit');
+});
+
+// Z8: a name-filtered named test runs unfiltered before the first edit, and
+// a later unfiltered run is judged against that run (Express 23 class; Z6 broke
+// ESLint 10 by chasing failures that predate the change).
+const FILTERED = "node_modules/.bin/_mocha --reporter dot test/app.use.js --grep 'arrays? of middleware'";
+const UNFILTERED = 'node_modules/.bin/_mocha --reporter dot test/app.use.js';
+const mochaOut = (passing, titles) => '  ' + '.'.repeat(passing) + '\n\n  ' + passing + ' passing (20ms)\n' +
+  (titles.length ? '  ' + titles.length + ' failing\n\n' + titles.map((t, i) => '  ' + (i + 1) + ') ' + t + ':\n     Error: boom\n').join('\n') : '');
+function filteredTask(extra = [], task = 'Accept arrays of middleware.\n\nEdit, and then run exactly: ' + FILTERED + '\n') {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  return prepare({tools, messages: [{role: 'user', content: task},
+    {role: 'assistant', content: [{type: 'tool_use', name: 'Read', id: 'read-x', input: {file_path: 'lib/app.js', offset: 7}}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: 'read-x', content: '7\tconst a = 1;\n8\t  return "old";\n9\t}'}]},
+    ...extra]});
+}
+const bashCall = (id, command) => ({role: 'assistant', content: [{type: 'tool_use', name: 'Bash', id, input: {command}}]});
+const bashResult = (id, output, is_error) => ({role: 'user', content: [{type: 'tool_result', tool_use_id: id, content: output, is_error}]});
+const editDone = [{role: 'assistant', content: [{type: 'tool_use', name: 'Edit', id: 'e1', input: {file_path: 'lib/router.js', old_string: 'a', new_string: 'b'}}]},
+  {role: 'user', content: [{type: 'tool_result', tool_use_id: 'e1', content: 'updated'}]}];
+
+test('a filtered named test runs unfiltered once before the first edit', () => {
+  const request = filteredTask();
+  const edit = 'EDIT ' + request.editableReads[0].read_id + ' 8 8\n  return "new";\nEND';
+  const [base, change] = parseReply(edit, request, {matchedTurn: true}).content;
+  assert.deepEqual([base.name, base.input.command, change.name], ['Bash', UNFILTERED, 'Edit']);
+  assert.match(base.id, /^toolu_base_/);
+  assert.equal(parseReply('{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"lib/other.js"}}]}', request, {matchedTurn: true}).content.length, 1);
+  // Not again once it ran, nor after an edit, nor for an unfiltered or unnamed test.
+  const ran = filteredTask([bashCall('toolu_base_1', UNFILTERED), bashResult('toolu_base_1', mochaOut(5, ['app neighbour']), true)]);
+  assert.equal(parseReply(edit, ran, {matchedTurn: true}).content[0].name, 'Edit');
+  assert.match(ran.prompt, /before your first edit to record which tests already fail/);
+  assert.equal(parseReply(edit, filteredTask(editDone), {matchedTurn: true}).content[0].name, 'Edit');
+  assert.equal(parseReply(edit, filteredTask([], 'Fix it, then run: ' + UNFILTERED), {matchedTurn: true}).content[0].name, 'Edit');
+  assert.equal(parseReply(edit, filteredTask([], 'Fix it.'), {matchedTurn: true}).content[0].name, 'Edit');
+});
+
+test('after a filtered pass, the unfiltered run is judged against the run before the edit', () => {
+  const before = [bashCall('toolu_base_1', UNFILTERED), bashResult('toolu_base_1', mochaOut(5, ['app arrays of middleware', 'app env neighbour']), true)];
+  const passed = [...before, ...editDone, bashCall('t1', FILTERED), bashResult('t1', mochaOut(3, []), false)];
+  const asked = filteredTask(passed);
+  assert.throws(() => parseReply('Done.', asked, {matchedTurn: true}), /only the tests matching --grep ran/);
+  const [rerun] = parseReply('Done.', asked, {matchedTurn: true, finalAttempt: true}).content;
+  assert.deepEqual([rerun.name, rerun.input.command], ['Bash', UNFILTERED]);
+  // Only the failure that predates the edit: finished, and the view says so.
+  const old = filteredTask([...passed, bashCall('t2', UNFILTERED), bashResult('t2', mochaOut(6, ['app env neighbour']), true)]);
+  assert.equal(parseReply('Done.', old, {matchedTurn: true}).content[0].text, 'Done.');
+  assert.match(old.prompt, /1 of these 1 failing tests failed then too; none is new/);
+  // A neighbour the change broke: one reminder, and the view names it.
+  const broke = filteredTask([...passed, bashCall('t3', UNFILTERED), bashResult('t3', mochaOut(5, ['app env neighbour', 'app should reject missing functions']), true)]);
+  assert.throws(() => parseReply('Done.', broke, {matchedTurn: true}), /latest command failed/);
+  assert.match(broke.prompt, /new since then: app should reject missing functions:/);
+});
+
+test('without a run before the edit, a filtered pass is accepted as before', () => {
+  const request = filteredTask([...editDone, bashCall('t1', FILTERED), bashResult('t1', mochaOut(3, []), false)]);
+  assert.equal(parseReply('Done.', request, {matchedTurn: true}).content[0].text, 'Done.');
+});
+
+test('failing test names are read from mocha, node TAP and pytest output', () => {
+  assert.deepEqual(failureTitles(mochaOut(2, ['a b', 'c'])), ['a b:', 'c:']);
+  assert.deepEqual(failureTitles('TAP version 13\nnot ok 1 - adds\nok 2 - b\n# pass 1\n# fail 1\n'), ['adds']);
+  assert.deepEqual(failureTitles('FAILED tests/a.py::test_b - assert 1 == 2\n==== 1 failed, 2 passed in 0.12s ===='), ['tests/a.py::test_b']);
+  assert.deepEqual(nameFilter("node_modules/.bin/_mocha t.js --grep 'a|b' --invert"), {filter: '--grep', unfiltered: 'node_modules/.bin/_mocha t.js'});
 });
