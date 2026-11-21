@@ -554,10 +554,33 @@ def clippy_answers():
     return 'CLIPPY' in (backends_since(start) or {})
 
 
+def check_claude():
+    """Return the version of the `claude` the launcher will start; stop the batch if it cannot start or is not
+    the version WA_EVAL_CLAUDE_VERSION pins.
+
+    An npm upgrade that skipped its postinstall once left `claude` as a placeholder script (spawn EACCES).
+    Every probe then failed before reaching the gateway, and the runner waited 26 hours for "CLIPPY".
+    """
+    try:
+        out = subprocess.run(['claude', '--version'], capture_output=True, text=True, timeout=60)
+        match = re.match(r'\s*(\d+\.\d+\.\d+)', out.stdout) if out.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        match = None
+    pinned = os.environ.get('WA_EVAL_CLAUDE_VERSION')
+    if not match:
+        print('STOP: Claude Code does not start (claude --version failed); this is not a backend problem', flush=True)
+        sys.exit(5)
+    if pinned and match.group(1) != pinned:
+        print('STOP: claude is', match.group(1), 'but WA_EVAL_CLAUDE_VERSION pins', pinned, flush=True)
+        sys.exit(5)
+    return match.group(1)
+
+
 def wait_for_clippy(limit=26 * 3600):
     """Wait (probing every 15 minutes) until CLIPPY answers. Returns seconds waited or None."""
     begin = time.time()
     while time.time() - begin < limit:
+        check_claude()
         if wait_ready() is not None and clippy_answers():
             return round(time.time() - begin)
         print('CLIPPY not answering; next probe in 15 minutes', time.strftime('%H:%M:%S'), flush=True)
@@ -600,6 +623,7 @@ def main():
         return
     runs = out / args.label
     runs.mkdir(exist_ok=True)
+    check_claude()
     for case in cases:
         pre = preflight(case, out)
         reference = reference_failures(case, out)
@@ -626,6 +650,8 @@ def main():
                     sys.exit(3)
                 waited += clippy_wait
                 replies_at = reply_log_offset()
+            # Checked after the waits: Claude Code can update itself during a long quota wait.
+            claude_version = check_claude()
             # Copy the checkout only after the waits. The copies keep the fixture's old timestamps, and
             # macOS's daily cleaner deletes such files from $TMPDIR, so a checkout made before a long
             # quota wait can lose most of its files before the session starts.
@@ -663,7 +689,7 @@ def main():
             passed = bool(scope and judged.get('correct') and facts['native_test_pass_after_edit']
                           and not run['timed_out'] and not run['error'])
             report = dict(case=case['id'], group=case.get('group'), label=args.label, repeat=k, mode=args.mode,
-                          changed=paths, scope=scope, **run, **facts, score=judged,
+                          claude_version=claude_version, changed=paths, scope=scope, **run, **facts, score=judged,
                           worktree=source != project, patch_correct=bool(scope and judged.get('correct')),
                           passed=passed, gateway=gateway_log_delta(args.gateway_log, log_start),
                           backends=backends_since(replies_at))
