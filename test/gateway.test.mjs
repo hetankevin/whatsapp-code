@@ -363,4 +363,10 @@ test('an answer that claims the offered tools are unavailable gets one repair', 
  assert.throws(() => parseReply(claim, r, {matchedTurn:true}), error => error.repairable && /Claude Code runs them/.test(error.message));
  assert.equal(parseReply(claim, r, {matchedTurn:true, finalAttempt:true}).content[0].text, claim);
  assert.equal(parseReply('The bug is in lib/a.js; the tests pass now.', r, {matchedTurn:true}).stop_reason, 'end_turn');
+ // FEAT 673a58bc (November 19): after compaction CLIPPY tried its own sandbox
+ // tools, then wrote this. It was accepted as the final answer.
+ for (const wording of ['I cannot complete the edit in this continuation because the file tools no longer reach the checkout.',
+   'Blocker: `Read`/`Grep`/`Edit`/`Bash` are not available in this session\'s toolset.']) {
+   assert.throws(() => parseReply(wording, r, {matchedTurn:true}), error => error.repairable && /Claude Code runs them/.test(error.message), wording);
+ }
 });

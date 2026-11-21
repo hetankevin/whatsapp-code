@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadProjectContext } from '../src/project-context.mjs';
 import { prepare, parseReply } from '../src/protocol.mjs';
+import { testCommand, namedTestCommand } from '../src/failed-tests.mjs';
 import { WhatsApp } from '../src/whatsapp.mjs';
 
 test('project context identifies the real directory and loads only instruction contents', async () => {
@@ -1314,6 +1315,58 @@ test('a no-op edit runs the untested change or ends plainly instead of looping',
   assert.match(parseReply(noop(tested), tested, {matchedTurn: true, finalAttempt: true}).content[0].text, /still applies/);
   const native = JSON.stringify({content:[{type:'tool_use',name:'Edit',input:{file_path:'module.js',old_string:'x',new_string:'x'}}]});
   assert.equal(parseReply(native, untested, {matchedTurn: true}).content[0].name, 'Bash');
+});
+
+// FEAT 673a58bc (November 19): one edit, no test yet, then Meta AI proposed the
+// same replacement twice and the session ended "No change made", untested.
+function taskEditRequest(task, extra = []) {
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  return prepare({tools, messages: [
+    {role: 'user', content: task},
+    {role: 'assistant', content: [{type: 'tool_use', name: 'Read', id: 'read-x', input: {file_path: 'module.js', offset: 7}}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: 'read-x', content: '7\tconst a = 1;\n8\t  return "old";\n9\t}'}]},
+    {role: 'assistant', content: [{type: 'tool_use', name: 'Edit', id: 'e1', input: {file_path: 'other.js', old_string: 'a', new_string: 'b'}}]},
+    {role: 'user', content: [{type: 'tool_result', tool_use_id: 'e1', content: 'updated'}]},
+    ...extra]});
+}
+
+test('a no-op edit after untested edits runs the test the task names', () => {
+  const noop = request => 'EDIT ' + request.editableReads[0].read_id + ' 8 8\n  return "old";\nEND';
+  const command = "node_modules/.bin/_mocha --reporter dot tests/lib/rule-context.js --grep 'a.b|c d' --invert";
+  const named = taskEditRequest('Support multiple fixes.\n\nFix the implementation, and then run exactly: ' + command + '\nIf it fails, revise.');
+  for (const finalAttempt of [false, true]) {
+    const [bash] = parseReply(noop(named), named, {matchedTurn: true, finalAttempt}).content;
+    assert.deepEqual([bash.name, bash.input], ['Bash', {command}]);
+  }
+  // No named test: ask for the next step once, then end with an accurate note.
+  const plain = taskEditRequest('Support multiple fixes.');
+  assert.throws(() => parseReply(noop(plain), plain, {matchedTurn: true}), /already in the file.*Run the tests/s);
+  assert.match(parseReply(noop(plain), plain, {matchedTurn: true, finalAttempt: true}).content[0].text, /have not been tested since/);
+});
+
+test('a final claim about untested edits runs the test the task names', () => {
+  const named = taskEditRequest('Add the option. Then run: npm test');
+  assert.throws(() => parseReply('Implemented the option.', named, {matchedTurn: true}), /no command has run since/);
+  const [bash] = parseReply('Implemented the option.', named, {matchedTurn: true, finalAttempt: true}).content;
+  assert.deepEqual([bash.name, bash.input], ['Bash', {command: 'npm test'}]);
+  // Prose that merely mentions a runner names no command; the claim stands.
+  const prose = taskEditRequest('Add the option; run npm test and fix what fails.');
+  assert.equal(parseReply('Implemented the option.', prose, {matchedTurn: true, finalAttempt: true}).content[0].text, 'Implemented the option.');
+});
+
+test('quoted shell metacharacters do not hide a test run', () => {
+  const bash = command => testCommand({name: 'Bash', input: {command}});
+  assert.ok(bash("node_modules/.bin/_mocha tests/lib/cli.js --grep 'execute.. should|isn.t found' --invert"));
+  assert.ok(bash("node_modules/.bin/_mocha --grep 'x(y)'"));
+  assert.ok(bash('pytest -k "a and b"'));
+  for (const unsafe of ['node_modules/.bin/_mocha --grep a|b', 'pytest -k "$(rm x)"', "npm test 'x' ; rm y", 'mocha "it\'s" ; rm -rf x']) {
+    assert.equal(bash(unsafe), null, unsafe);
+  }
+  assert.equal(namedTestCommand('Please run `pytest -q tests/a.py::test_b` after editing.'), 'pytest -q tests/a.py::test_b');
+  assert.equal(namedTestCommand('Test command: pytest tests/a.py::test_b'), 'pytest tests/a.py::test_b');
+  assert.equal(namedTestCommand('Note: then run: npm test.'), 'npm test');
+  assert.equal(namedTestCommand('Run npm test and fix what fails.'), null);
+  assert.equal(namedTestCommand('run exactly: node --test a.test.mjs; rm -rf x'), null);
 });
 
 test('the configured edit budget ends with an explicit unsuccessful answer', async () => {

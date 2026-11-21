@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { testState, testCommand, readableOutput } from './failed-tests.mjs';
+import { testState, testCommand, namedTestCommand, readableOutput } from './failed-tests.mjs';
 
 export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -253,7 +253,7 @@ const lineEditInputSchema = {
 
 // A short reply that only announces the next step ("Fixing X by Y.").
 const announcedStep = /^(?:(?:Now,? |Next,? )?(?:let me (?!know\b)|I'll now |I will now |now I'll )|(?:Fixing|Applying|Editing|Updating|Patching|Implementing|Modifying|Changing|Adding|Removing|Rewriting|Running|Reading|Inspecting|Searching|Testing)\b)/i;
-const toolsUnavailableClaim = /not available to (?:this|the) agent|(?:do not|don't|cannot|can't) (?:have )?access (?:to )?(?:the )?(?:tools?|files?|repository|file ?system|checkout)|tools? (?:are|is|were) (?:not available|unavailable)/i;
+const toolsUnavailableClaim = /not available to (?:this|the) agent|(?:do not|don't|cannot|can't) (?:have )?access (?:to )?(?:the )?(?:tools?|files?|repository|file ?system|checkout)|tools? (?:are|is|were) (?:not available|unavailable)|(?:tools?|\x60(?:Read|Grep|Glob|Edit|Write|Bash)\x60)[^.\n]{0,80}?\b(?:are|is|were) (?:not available|unavailable|not accessible)|tools? (?:no longer|do not|don't|cannot|can't) (?:reach|access|see)\b/i;
 
 function repairableError(message) {
   const error = new GatewayError(message, 502);
@@ -737,7 +737,7 @@ function latestTaskIndex(messages) {
 
 // Native results show whether the latest command failed, or whether files
 // changed after a failed command without a later run.
-function unfinishedWork(messages, reviewAfterPass = false) {
+function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined) {
   const calls = new Map();
   let edited = false;
   let passesAfterEdit = 0;
@@ -773,7 +773,11 @@ function unfinishedWork(messages, reviewAfterPass = false) {
     const message = 'Files changed after the last failed command and nothing has run since. Request the command to check the change, or give a final answer that says it is untested.';
     return lastFailedTest ? {message, rerun: lastFailedTest} : message;
   }
-  if (editedUntested) return 'Files changed and no command has run since. Run the project tests to check the change, or give a final answer that says it is untested.';
+  if (editedUntested) {
+    const message = 'Files changed and no command has run since. Run the project tests to check the change, or give a final answer that says it is untested.';
+    // When the task names its test, a final claim runs that test instead.
+    return namedTest ? {message, rerun: namedTest} : message;
+  }
   // Opt-in (WA_REVIEW_AFTER_PASS=1): passing tests can still miss what the task
   // asks for. On the first pass after edits, ask once for a requirements check.
   if (reviewAfterPass && edited && passesAfterEdit === 1 && last?.name === 'Bash' && !last.failed) {
@@ -1368,8 +1372,13 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
   if (prompt.length > maxChars) throw new GatewayError(`Context is ${prompt.length} characters; the configured WhatsApp limit is ${maxChars}. Start a shorter session or reduce tool output. No context was truncated.`, 413);
   const taskUsedTools = !editFiles && !textOnly && taskIndex >= 0 &&
     taskMessages.some(message => Array.isArray(message.content) && message.content.some(block => block.type === 'tool_use'));
+  // The test command the task's own request names, if any ("then run: npm test").
+  const taskText = taskIndex >= 0 ? (typeof transcript[taskIndex].content === 'string' ? transcript[taskIndex].content
+    : transcript[taskIndex].content.filter(block => block.type === 'text').map(block => block.text).join('\n')) : '';
+  const named = namedTestCommand(taskText);
+  const namedTest = named ? {command: named} : undefined;
   const unfinished = choice.type === 'auto' && !editFiles && !textOnly && !unfinishedVerification && taskIndex >= 0
-    ? unfinishedWork(taskMessages, Boolean(editOptions.reviewAfterPass)) : undefined;
+    ? unfinishedWork(taskMessages, Boolean(editOptions.reviewAfterPass), namedTest) : undefined;
   // The last test command run in this task, and whether the workspace
   // changed after it (a successful Edit or Write).
   let lastTest, changedSinceTest = false;
@@ -1409,7 +1418,7 @@ export function prepare(body, maxChars = 60000, snapshotContext = false, editFil
     sessionKey = createHash('sha256').update(JSON.stringify(first?.content ?? '')).digest('hex').slice(0, 32);
   }
   return {prompt, requestId, validators, choice, snapshots, readHandles, editableReads, testFailures, testPasses, taskUsedTools, unfinished, recentFiles, mentionedFiles, contextReadOf, sessionKey,
-    lastTest, changedSinceTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
+    lastTest, changedSinceTest, namedTest, preserveCodeBlocks: Boolean(rangeEnabled && !editFiles && !useSnapshot && !useVerificationContext),
     validateLineEdit: rangeEnabled ? ajv.compile(lineEditInputSchema) : null, model, editFiles, maxChars, fullChars,
     unfinishedVerification, useVerificationContext, textOnly};
 }
@@ -1523,12 +1532,23 @@ function rerunInsteadOfClaim(request, calls, finalAttempt, usage) {
   return assistantMessage(request.model, [{type: 'tool_use', id: 'toolu_rerun_' + randomBytes(12).toString('hex'), name: 'Bash', input}], usage);
 }
 
+// A replacement identical to the current source: the intended code is
+// already there. If this task changed files since its last test, run that
+// test (or, before any test, the one the task names). Otherwise ask once for
+// the next step, then end the turn with an accurate note instead of looping.
 function noopFollowUp(request, finalAttempt) {
-  if (request.lastTest && request.changedSinceTest && request.validators.get('Bash')?.(request.lastTest)) {
-    return {type: 'tool_use', id: 'toolu_verify_' + randomBytes(12).toString('hex'), name: 'Bash', input: {...request.lastTest}};
+  const test = request.lastTest ?? request.namedTest;
+  if (test && request.changedSinceTest && request.validators.get('Bash')?.(test)) {
+    return {type: 'tool_use', id: 'toolu_verify_' + randomBytes(12).toString('hex'), name: 'Bash', input: {...test}};
   }
-  if (finalAttempt) return {type: 'text', text: 'No change made: the proposed replacement matches the current source.' +
-    (request.lastTest ? ' The latest result of ' + request.lastTest.command + ' still applies.' : '')};
+  if (request.changedSinceTest && !finalAttempt) {
+    throw repairableError('That replacement is already in the file: an earlier edit in this task made it. Do not repeat it. ' +
+      'Run the tests with Bash to check the change, or edit something that still needs to change.');
+  }
+  if (finalAttempt) return {type: 'text', text: request.changedSinceTest
+    ? 'No further change: the proposed replacement matches the current source. Files changed in this task have not been tested since.'
+    : 'No change made: the proposed replacement matches the current source.' +
+      (request.lastTest ? ' The latest result of ' + request.lastTest.command + ' still applies.' : '')};
 }
 
 // Search and replace, the shape Meta AI produces when simply asked for a patch:
