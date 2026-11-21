@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadProjectContext } from '../src/project-context.mjs';
 import { prepare, parseReply } from '../src/protocol.mjs';
-import { testCommand, namedTestCommand, nameFilter, failureTitles } from '../src/failed-tests.mjs';
+import { testCommand, namedTestCommand, nameFilter, failureTitles, failureReport } from '../src/failed-tests.mjs';
 import { WhatsApp } from '../src/whatsapp.mjs';
 
 test('project context identifies the real directory and loads only instruction contents', async () => {
@@ -1719,9 +1719,53 @@ test('without a run before the edit, a filtered pass is accepted as before', () 
   assert.equal(parseReply('Done.', request, {matchedTurn: true}).content[0].text, 'Done.');
 });
 
+// Z8b (N8 ESLint 10, November 21): Claude Code cut both long outputs to about
+// 10,000 characters, so 8 of 12 failing names were visible before the edit and
+// 8 of 11 after; Z8 called a test that failed before the edit "new".
+const cut = text => {
+  const lines = text.split('\n');
+  const keep = Math.floor(lines.length / 3);
+  return lines.slice(0, keep).join('\n') + '\n\n... [5089 characters truncated] ...\n\n' + lines.slice(-keep).join('\n');
+};
+const twelve = Array.from({length: 12}, (_, i) => 'Config env case ' + (i + 1));
+
+test('a cut test output is compared by counts, never by names', () => {
+  const before = [bashCall('toolu_base_1', UNFILTERED), bashResult('toolu_base_1', cut(mochaOut(132, twelve)), true)];
+  const passed = [...before, ...editDone, bashCall('t1', FILTERED), bashResult('t1', mochaOut(1, []), false)];
+  const after = filteredTask([...passed, bashCall('t2', UNFILTERED), bashResult('t2', cut(mochaOut(133, twelve.slice(1))), true)]);
+  assert.doesNotMatch(after.prompt, /new since then/);
+  assert.match(after.prompt, /reported 12 failing tests; this run reports 11/);
+  assert.match(after.prompt, /cannot be matched one by one/);
+  // Without a complete comparison the failed run is not treated as a pass.
+  assert.throws(() => parseReply('Done.', after, {matchedTurn: true}), /latest command failed/);
+  // Complete outputs still get the name comparison.
+  const whole = filteredTask([bashCall('toolu_base_1', UNFILTERED), bashResult('toolu_base_1', mochaOut(132, twelve), true),
+    ...editDone, bashCall('t1', FILTERED), bashResult('t1', mochaOut(1, []), false),
+    bashCall('t2', UNFILTERED), bashResult('t2', mochaOut(133, twelve.slice(1)), true)]);
+  assert.match(whole.prompt, /11 of these 11 failing tests failed then too; none is new/);
+  assert.equal(parseReply('Done.', whole, {matchedTurn: true}).content[0].text, 'Done.');
+});
+
+test('after a native compaction the gateway records no new baseline', () => {
+  const summary = 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary: edited lib/config.js.\n\nEdit, and then run exactly: ' + FILTERED + '\n';
+  const request = filteredTask([], summary);
+  const edit = 'EDIT ' + request.editableReads[0].read_id + ' 8 8\n  return "new";\nEND';
+  assert.deepEqual(parseReply(edit, request, {matchedTurn: true}).content.map(block => block.name), ['Edit']);
+  // A test run seen before any visible edit is not a baseline either: earlier edits are hidden.
+  const ran = filteredTask([bashCall('t0', UNFILTERED), bashResult('t0', mochaOut(5, ['app neighbour']), true), ...editDone,
+    bashCall('t1', FILTERED), bashResult('t1', mochaOut(3, []), false)], summary);
+  assert.equal(parseReply('Done.', ran, {matchedTurn: true}).content[0].text, 'Done.');
+});
+
 test('failing test names are read from mocha, node TAP and pytest output', () => {
   assert.deepEqual(failureTitles(mochaOut(2, ['a b', 'c'])), ['a b:', 'c:']);
   assert.deepEqual(failureTitles('TAP version 13\nnot ok 1 - adds\nok 2 - b\n# pass 1\n# fail 1\n'), ['adds']);
   assert.deepEqual(failureTitles('FAILED tests/a.py::test_b - assert 1 == 2\n==== 1 failed, 2 passed in 0.12s ===='), ['tests/a.py::test_b']);
   assert.deepEqual(nameFilter("node_modules/.bin/_mocha t.js --grep 'a|b' --invert"), {filter: '--grep', unfiltered: 'node_modules/.bin/_mocha t.js'});
+  // Whether every failure the runner counted is named.
+  assert.deepEqual(failureReport(mochaOut(2, ['a b', 'c'])), {titles: ['a b:', 'c:'], failing: 2, complete: true});
+  assert.deepEqual([failureReport(cut(mochaOut(132, twelve))).failing, failureReport(cut(mochaOut(132, twelve))).complete], [12, false]);
+  assert.equal(failureReport('TAP version 13\nnot ok 1 - adds\nok 2 - b\n# pass 1\n# fail 1\n').complete, true);
+  assert.equal(failureReport('FAILED tests/a.py::test_b - x\n==== 1 failed, 1 error, 2 passed in 0.12s ====').complete, false);
+  assert.equal(failureReport('passed').failing, null);
 });

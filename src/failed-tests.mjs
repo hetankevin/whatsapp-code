@@ -82,13 +82,25 @@ export function nameFilter(command) {
 // Names of the failing tests in a test run's output, as the scorer reads them:
 // pytest "FAILED id", node TAP "not ok N - name", mocha "N) name".
 export function failureTitles(output) {
+  return failureReport(output).titles;
+}
+
+// The same names plus the runner's own failing count. Claude Code cuts long
+// command output in the middle, which can drop names; `complete` says whether
+// every failure the runner counted is named.
+export function failureReport(output) {
   const text = (typeof output === 'string' ? output : Array.isArray(output)
     ? output.filter(block => block?.type === 'text').map(block => block.text).join('\n') : '')
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-  const pytest = /^=*\s*(\d+ (passed|failed|errors?)\b|no tests ran).* in [\d.]+s/m.test(text);
+  const pytest = /^=*\s*(\d+ (passed|failed|errors?)\b|no tests ran).* in [\d.]+s/m.exec(text);
   const tap = /^# (pass|fail) \d+/m.test(text);
   const pattern = pytest ? /^(?:FAILED|ERROR) (\S+)/gm : tap ? /^\s*not ok \d+ - ([^\n]+)/gm : /^\s*\d+\) ([^\n]+)/gm;
-  return [...new Set([...text.matchAll(pattern)].map(match => match[1].trim()))];
+  const named = [...text.matchAll(pattern)].map(match => match[1].trim());
+  const count = pytest
+    ? [...pytest[0].matchAll(/(\d+) (?:failed|errors?)\b/g)].reduce((sum, match) => sum + Number(match[1]), 0)
+    : Number((tap ? /^# fail (\d+)/m : /^\s*(\d+) failing\b/m).exec(text)?.[1] ?? NaN);
+  const failing = Number.isFinite(count) ? count : null;
+  return {titles: [...new Set(named)], failing, complete: failing !== null && named.length === failing};
 }
 
 // Terminal styling and dependency stack frames add nothing for Meta AI.

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import Ajv from 'ajv';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { testState, testCommand, namedTestCommand, nameFilter, failureTitles, readableOutput } from './failed-tests.mjs';
+import { testState, testCommand, namedTestCommand, nameFilter, failureReport, readableOutput } from './failed-tests.mjs';
 
 export class GatewayError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -767,8 +767,10 @@ function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined
           else if (filteredPass && test === filteredPass.unfiltered) {
             // The filtered tests passed since the latest edit; failures that
             // all failed before the first edit too are not this change's.
-            const titles = failureTitles(block.content);
-            if (last.failed && titles.length && titles.every(title => baselines.get(test).has(title))) last.failed = false;
+            // Only a complete comparison can show that: a cut output may hide a new failure.
+            const now = failureReport(block.content), then = baselines.get(test);
+            if (last.failed && now.complete && then.complete && now.titles.length &&
+                now.titles.every(title => then.titles.includes(title))) last.failed = false;
             if (!last.failed) unfilteredPass = true;
           } else if (!filter && !last.failed) unfilteredPass = true;
         }
@@ -813,8 +815,16 @@ function unfinishedWork(messages, reviewAfterPass = false, namedTest = undefined
 // form has not run yet, that run, to add before the first edit. Some suites
 // already fail in a given environment; a session that chases those failures
 // breaks working code (Z6 on ESLint 10), so later failures are told apart.
+// Claude Code starts the transcript after a native compaction with this text.
+const continuedSession = message => message.role === 'user' && (typeof message.content === 'string' ? [message.content]
+  : Array.isArray(message.content) ? message.content.filter(block => block.type === 'text').map(block => block.text) : [])
+  .some(text => text.startsWith('This session is being continued from a previous conversation'));
+
 function filteredBaseline(messages, namedTest, validators) {
   const calls = new Map(), baselines = new Map(), notes = new Map(), later = [];
+  // After a native compaction the summary can hide earlier edits, so only the
+  // gateway's own run is known to come before the first edit, and no new one starts.
+  const compacted = messages.some(continuedSession);
   let edited = false;
   for (const message of messages) {
     if (!Array.isArray(message.content)) continue;
@@ -826,8 +836,8 @@ function filteredBaseline(messages, namedTest, validators) {
       if (['Edit', 'Write'].includes(call.name) && !block.is_error) edited = true;
       const test = call.name === 'Bash' ? testCommand(call) : null;
       if (!test) continue;
-      if (!edited) {
-        baselines.set(test, new Set(failureTitles(block.content)));
+      if (!edited && (!compacted || call.id?.startsWith('toolu_base_'))) {
+        baselines.set(test, failureReport(block.content));
         if (call.id?.startsWith('toolu_base_')) {
           notes.set(call.id, 'The gateway ran this before your first edit to record which tests already fail; it shows the code before your changes.');
         }
@@ -835,15 +845,22 @@ function filteredBaseline(messages, namedTest, validators) {
     }
   }
   for (const {id, test, block} of later) {
-    const titles = failureTitles(block.content);
-    if (!titles.length) continue;
-    const fresh = titles.filter(title => !baselines.get(test).has(title));
-    notes.set(id, `Compared with the same command before this task's first edit: ${titles.length - fresh.length} of these ${titles.length} failing tests failed then too` +
-      (fresh.length ? `; new since then: ${fresh.slice(0, 10).join('; ')}` : '; none is new') + '.');
+    const now = failureReport(block.content), then = baselines.get(test);
+    if (now.complete && then.complete) {
+      const titles = now.titles;
+      if (!titles.length) continue;
+      const fresh = titles.filter(title => !then.titles.includes(title));
+      notes.set(id, `Compared with the same command before this task's first edit: ${titles.length - fresh.length} of these ${titles.length} failing tests failed then too` +
+        (fresh.length ? `; new since then: ${fresh.slice(0, 10).join('; ')}` : '; none is new') + '.');
+    } else if (now.failing !== null && then.failing !== null) {
+      // Names are missing from a cut output; matching them would call old failures new.
+      notes.set(id, `Before this task's first edit the same command reported ${then.failing} failing tests; this run reports ${now.failing}. ` +
+        'Claude Code shortened at least one of the two outputs, so the failing tests cannot be matched one by one.');
+    }
   }
   const filter = namedTest && nameFilter(namedTest.command);
   const run = filter && {command: filter.unfiltered, description: 'Record which tests fail before the first edit'};
-  const baselineRun = run && !edited && !baselines.has(filter.unfiltered) && validators.get('Bash')?.(run) ? run : undefined;
+  const baselineRun = run && !edited && !compacted && !baselines.has(filter.unfiltered) && validators.get('Bash')?.(run) ? run : undefined;
   return {baselines, baselineRun, notes};
 }
 
