@@ -139,7 +139,7 @@ def preflight(case, out):
         for arg in cmd:
             if arg.startswith('/') and not Path(arg).exists():
                 raise SystemExit(f"fixture {case['id']} extra check is missing: {arg}")
-    cache = out / (f"preflight-{case['id']}.json" if SCORER_REVISION < 5 else f"preflight-v{SCORER_REVISION}-{case['id']}.json")
+    cache = out / (f"preflight-{case['id']}.json" if SCORER_REVISION < 5 else f"preflight-v{TEST_REVISION}-{case['id']}.json")
     if cache.exists():
         cached = json.loads(cache.read_text())
         # A manifest command changed since this was cached: the cache no longer describes the case.
@@ -169,7 +169,7 @@ def events_of(lines):
             continue
 
 
-def analyse(events, cmd):
+def analyse(events, cmd, broader=None):
     calls, results = {}, []
     denials, denied_ids = 0, set()
     for idx, event in enumerate(events):
@@ -189,20 +189,26 @@ def analyse(events, cmd):
             if block.get('type') == 'tool_result':
                 results.append((idx, calls.get(block.get('tool_use_id'), {}), block))
 
-    def is_target(call):
+    def runs(call, command):
         try:
-            return shlex.split(call.get('input', {}).get('command', '')) == cmd
+            return shlex.split(call.get('input', {}).get('command', '')) == command
         except ValueError:
             return False
+    is_target = lambda call: runs(call, cmd)
     edits = [i for i, c, b in results if c.get('name') in ('Edit', 'Write') and not b.get('is_error')]
     tests = [(i, b) for i, c, b in results if c.get('name') == 'Bash' and is_target(c)]
+    # Revision 11: a passing run of the case's broader command also verifies the patch. In every manifest
+    # that command is the target itself or the target without its name filter (the same test files, all
+    # of their tests), so it runs the target tests and more.
+    checks = tests + [(i, b) for i, c, b in results if c.get('name') == 'Bash' and broader and broader != cmd
+                      and runs(c, broader)]
     return {
         'tools': [c['name'] for c in calls.values()],
         'edits_ok': len(edits),
         'edits_failed': sum(1 for _, c, b in results if c.get('name') in ('Edit', 'Write') and b.get('is_error')),
         'bash_calls': sum(1 for c in calls.values() if c['name'] == 'Bash'),
         'native_tests': len(tests),
-        'native_test_pass_after_edit': bool(edits) and any(i > max(edits) and not b.get('is_error') for i, b in tests),
+        'native_test_pass_after_edit': bool(edits) and any(i > max(edits) and not b.get('is_error') for i, b in checks),
         'read_limits': [c['input'].get('limit') for c in calls.values() if c['name'] == 'Read'],
         'permission_denials': denials,
         # The harness allows the exact target command; a denial of it is a harness defect
@@ -403,14 +409,19 @@ def launch(case, project, config, mode, budget, max_turns, out_stem, resume=None
 # test keeps the same title across runs (some ESLint titles embed resolved paths).
 # 10: that normalization replaces the longest path spelling first, so it no longer depends on
 # Python's per-process set order.
-SCORER_REVISION = 10
+# 11: native verification also accepts a passing run of the case's broader command after the last edit
+# (the target without its name filter); a session that verified with the whole file was failed before
+# (N8 neighbour-router r2, November 21). Running and judging the tests is unchanged since 10, so the
+# caches keep TEST_REVISION and a rescore reuses each attempt's revision-10 judgement.
+TEST_REVISION = 10
+SCORER_REVISION = 11
 
 
 
 def isolated_failures(case, out_stem):
     """Titles that fail on the fixed revision when each test file under the
     preservation paths runs alone. Cached per case next to the results."""
-    cache = Path(out_stem).parent.parent / f"isolated-v{SCORER_REVISION}-{case['id']}.json"
+    cache = Path(out_stem).parent.parent / f"isolated-v{TEST_REVISION}-{case['id']}.json"
     if cache.exists():
         return set(json.loads(cache.read_text()))
     paths = [a for a in case['preserve'] if not a.startswith(('-', 'node_modules')) and a.endswith(('/', '.js'))]
@@ -437,7 +448,7 @@ def reference_failures(case, out, runs=3):
     pass separately."""
     if not case.get('preserve'):
         return None
-    cache = out / (f"reference3-{case['id']}.json" if SCORER_REVISION < 5 else f"reference3-v{SCORER_REVISION}-{case['id']}.json")
+    cache = out / (f"reference3-{case['id']}.json" if SCORER_REVISION < 5 else f"reference3-v{TEST_REVISION}-{case['id']}.json")
     if cache.exists():
         return json.loads(cache.read_text())
     counts, passing = {}, []
@@ -543,14 +554,25 @@ def rescore(cases, out, labels):
                 report = json.loads(path.read_text())
                 stem = str(path)[:-5]
                 patch = Path(stem + '.diff').read_text() if Path(stem + '.diff').exists() else ''
-                judged = score(case, preflight(case, out), patch, stem + '.rescore', reference_failures(case, out)) \
-                    if patch.strip() else {'applied': False, 'scorer': SCORER_REVISION}
+                # Judging is unchanged since TEST_REVISION: reuse a judgement made at that revision or later.
+                judged = None
+                for source in (Path(stem + f'.rescore{TEST_REVISION}.json'), path):
+                    saved = (json.loads(source.read_text()).get('score') or {}) if source.exists() else {}
+                    if saved.get('scorer', 0) >= TEST_REVISION:
+                        judged = saved
+                        break
+                if judged is None:
+                    judged = score(case, preflight(case, out), patch, stem + '.rescore', reference_failures(case, out)) \
+                        if patch.strip() else {'applied': False, 'scorer': SCORER_REVISION}
                 correct = bool(report.get('scope') and judged.get('correct'))
-                passed = bool(correct and report.get('native_test_pass_after_edit') and
-                              not report.get('timed_out') and not report.get('error'))
+                session = Path(stem + '.jsonl')
+                verified = analyse(list(events_of(session.read_text().splitlines())), case['cmd'], case.get('broader'))[
+                    'native_test_pass_after_edit'] if session.exists() else report.get('native_test_pass_after_edit')
+                passed = bool(correct and verified and not report.get('timed_out') and not report.get('error'))
                 Path(stem + f'.rescore{SCORER_REVISION}.json').write_text(json.dumps(
                     {'case': case['id'], 'label': label, 'original_passed': report.get('passed'),
-                     'patch_correct': correct, 'passed': passed, 'score': judged}, indent=2) + '\n')
+                     'patch_correct': correct, 'native_verified': verified, 'passed': passed, 'score': judged},
+                    indent=2) + '\n')
                 print('rescore', label, path.name, 'PASS' if passed else 'fail', 'correct', correct, flush=True)
 
 
@@ -678,7 +700,7 @@ def main():
             print('running', args.label, case['id'], k, args.mode, 'waited', waited, 'quota wait', quota_wait, flush=True)
             run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, case.get('resume_prompts') or args.resume_prompt)
             events = run.pop('events')
-            facts = analyse(events, case['cmd'])
+            facts = analyse(events, case['cmd'], case.get('broader'))
             named = json.dumps([block.get('input') for event in events if isinstance(event.get('message'), dict)
                                 for block in event['message'].get('content') or [] if isinstance(block, dict)
                                 and block.get('type') == 'tool_use'])
