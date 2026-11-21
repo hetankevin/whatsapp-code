@@ -49,6 +49,15 @@ EXCLUDED = re.compile(r'^(tests?/|package(-lock)?\.json$|npm-shrinkwrap\.json$|n
 def copy_tree(src, dst):
     subprocess.run(['cp', '-cR', str(src), str(dst)], check=True)
     shutil.rmtree(dst / '.git', ignore_errors=True)
+    # A clone keeps the fixture's access, modification and birth times, and reads do not update access
+    # times on this volume, so macOS's daily $TMPDIR cleaner (dirhelper, 03:35 local, "older than 3 days")
+    # deleted files from checkouts in use (Z4 ESLint 19, RSN-A1 ESLint 12, FEAT-Z7 673a58bc r2).
+    # Mark every entry as just accessed. Modification times stay, so no test can see a difference.
+    now = time.time_ns()
+    for root, dirs, files in os.walk(dst):
+        for name in dirs + files:
+            path = os.path.join(root, name)
+            os.utime(path, ns=(now, os.lstat(path).st_mtime_ns), follow_symlinks=False)
 
 
 def init_git(project):
@@ -668,7 +677,11 @@ def main():
                                                               str(project.resolve()): {'hasTrustDialogAccepted': True}}}))
             print('running', args.label, case['id'], k, args.mode, 'waited', waited, 'quota wait', quota_wait, flush=True)
             run = launch(case, project, config, args.mode, args.budget, args.max_turns, stem, case.get('resume_prompts') or args.resume_prompt)
-            facts = analyse(run.pop('events'), case['cmd'])
+            events = run.pop('events')
+            facts = analyse(events, case['cmd'])
+            named = json.dumps([block.get('input') for event in events if isinstance(event.get('message'), dict)
+                                for block in event['message'].get('content') or [] if isinstance(block, dict)
+                                and block.get('type') == 'tool_use'])
             # Background sessions edit inside a native worktree under .claude/worktrees.
             worktrees = [Path(line[9:]) for line in subprocess.check_output(
                 ['git', 'worktree', 'list', '--porcelain'], cwd=project, text=True).splitlines()
@@ -682,7 +695,10 @@ def main():
                     ['git', 'status', '--porcelain', '--untracked-files=all'], cwd=project, text=True).splitlines()
                     if not line[3:].startswith('.claude/')]
             paths = [line[3:] for line in status]
-            scope = bool(paths) and all(line.startswith(' M ') for line in status) and not any(EXCLUDED.match(p) for p in paths)
+            # Tracked files deleted although no tool call named them: something outside the session
+            # (the OS cleaner above) emptied the checkout. The attempt is then harness-invalid.
+            vanished = [p for p in paths if (' D ' + p) in status and Path(p).name not in named]
+            scope =bool(paths) and all(line.startswith(' M ') for line in status) and not any(EXCLUDED.match(p) for p in paths)
             patch = subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=source, text=True)
             Path(stem + '.diff').write_text(patch)
             judged = score(case, pre, patch, stem, reference) if paths else {'applied': False, 'scorer': SCORER_REVISION}
@@ -693,10 +709,14 @@ def main():
                           worktree=source != project, patch_correct=bool(scope and judged.get('correct')),
                           passed=passed, gateway=gateway_log_delta(args.gateway_log, log_start),
                           backends=backends_since(replies_at))
+            if len(vanished) >= 5:
+                report['harness_invalid'] = f'{len(vanished)} tracked files vanished from the checkout without any tool call naming them'
             Path(stem + '.json').write_text(json.dumps(report, indent=2) + '\n')
             if facts['target_denied']:
                 print('STOP: Claude Code denied the exact target command in', case['id'], k, '(harness defect)', flush=True)
                 sys.exit(4)
+            if report.get('harness_invalid'):
+                print('INVALID', case['id'], k, report['harness_invalid'], flush=True)
             print('result', case['id'], k, 'PASS' if passed else 'fail', run['seconds'], 's',
                   'edits', facts['edits_ok'], 'tests', facts['native_tests'], 'target', judged.get('target_pass'),
                   'parity', judged.get('parity'), 'preserve', (judged.get('preserve') or {}).get('ok'),

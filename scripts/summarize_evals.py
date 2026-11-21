@@ -100,7 +100,8 @@ def load(paths):
                                  correct=bool(report.get('patch_correct')), passed=bool(report.get('passed')),
                                  native=bool(report.get('native_test_pass_after_edit')),
                                  edits=report.get('edits_ok'), compactions=report.get('compactions', 0),
-                                 layer='harness' if notes.get(f'{path.parent.name}/{path.stem}') and not report.get('passed')
+                                 layer='harness' if (notes.get(f'{path.parent.name}/{path.stem}') or report.get('harness_invalid'))
+                                 and not report.get('passed')
                                  else layer(report), backend=backend(report)))
             elif 'scenario' in report:
                 correct = bool(report.get('visible') and report.get('held_out') and report.get('implementation_only'))
