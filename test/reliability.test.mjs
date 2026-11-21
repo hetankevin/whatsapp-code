@@ -1330,6 +1330,24 @@ function taskEditRequest(task, extra = []) {
     ...extra]});
 }
 
+test('an EDIT frame sent as the text of a JSON answer is an edit, not a final answer', () => {
+  // Seen live (FEAT-Z7 feat-13ef1c72 attempt 2): the whole frame inside one JSON text block ended the session.
+  const request = taskEditRequest('Return "new".');
+  const frame = 'EDIT ' + request.editableReads[0].read_id + ' 8 8\n  return "new";\nEND';
+  for (const finalAttempt of [false, true]) {
+    const [edit, ...rest] = parseReply(JSON.stringify({content: [{type: 'text', text: frame}]}), request, {matchedTurn: true, finalAttempt}).content;
+    assert.equal(rest.length, 0);
+    assert.equal(edit.name, 'Edit');
+    assert.match(edit.input.old_string, /return "old"/);
+    assert.match(edit.input.new_string, /return "new"/);
+  }
+  // A JSON answer that only mentions an EDIT frame in prose is still an answer.
+  const tools = ['Read', 'Edit', 'Bash'].map(name => ({name, input_schema: {type: 'object'}}));
+  const question = prepare({tools, messages: [{role: 'user', content: 'How do I change line 8?'}]});
+  const answer = 'Send an EDIT frame:\nEDIT is followed by the read_id and the line range.';
+  assert.equal(parseReply(JSON.stringify({content: [{type: 'text', text: answer}]}), question, {matchedTurn: true}).content[0].text, answer);
+});
+
 test('a no-op edit after untested edits runs the test the task names', () => {
   const noop = request => 'EDIT ' + request.editableReads[0].read_id + ' 8 8\n  return "old";\nEND';
   const command = "node_modules/.bin/_mocha --reporter dot tests/lib/rule-context.js --grep 'a.b|c d' --invert";
