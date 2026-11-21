@@ -10,7 +10,13 @@ like the BugsJS cases. Only existing implementation files need changing.
 
     python3 scripts/make_upstream_features.py <eslint clone> <dir>
     python3 scripts/eval_bugsjs.py --manifest <dir>/features.json --out <results> --label feat --budget 900
+
+A sealed group takes the commits from scripts/select_upstream_features.py in its order and keeps the first
+that validate:
+
+    python3 scripts/make_upstream_features.py <eslint clone> <dir> --commits A B C ... --keep 6 --manifest sealed.json
 """
+import argparse
 import io
 import json
 import re
@@ -54,9 +60,11 @@ def reference_failures(full, target):
     return sorted({m.rstrip(':') for m in re.findall(r'^\s+\d+\) (.+)$', text, re.M)})
 
 
-def build(repo, root):
+def build(repo, root, commits=COMMITS, keep=None):
     manifest = []
-    for commit in COMMITS:
+    for commit in commits:
+        if keep is not None and len(manifest) >= keep:
+            break
         case_id = 'feat-' + commit
         start, full = root / (case_id + '-test'), root / (case_id + '-full')
         changed = [line.split('\t') for line in git(repo, 'diff-tree', '--no-commit-id', '--name-status', '-r', commit).splitlines()]
@@ -82,12 +90,15 @@ def build(repo, root):
             # (such as 'execute\(\)\ should') whatever the allow rules say.
             pattern = '|'.join(re.sub(r'[^A-Za-z0-9 ]', '.', title) for title in broken)
             target = target + ['--grep', pattern, '--invert']
-        manifest.append({'id': case_id, 'group': 'feature-upstream', 'test_dir': str(start), 'full_dir': str(full),
-                         'cmd': target, 'broader': target, 'preserve': MOCHA + ['--recursive', 'tests/lib'],
-                         'excluded_from_target': broken, 'task': task_text(repo, commit)})
+        case = {'id': case_id, 'group': 'feature-upstream', 'test_dir': str(start), 'full_dir': str(full),
+                'cmd': target, 'broader': target, 'preserve': MOCHA + ['--recursive', 'tests/lib'],
+                'excluded_from_target': broken, 'task': task_text(repo, commit)}
+        if keep is not None and not validate([case]):
+            print('skipped', case_id, '(does not validate)')
+            continue
+        manifest.append(case)
         print('built', case_id, 'implementation files:',
-              [p for s, p in changed if not p.startswith(('tests/', 'docs/'))])
-    (root / 'features.json').write_text(json.dumps(manifest, indent=1) + '\n')
+              len([p for s, p in changed if not p.startswith(('tests/', 'docs/'))]))
     return manifest
 
 
@@ -102,11 +113,18 @@ def validate(manifest):
 
 
 def main():
-    if len(sys.argv) != 3:
-        sys.exit(__doc__)
-    root = Path(sys.argv[2]).resolve()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('repo', type=Path)
+    parser.add_argument('dir', type=Path)
+    parser.add_argument('--commits', nargs='*', default=COMMITS)
+    parser.add_argument('--keep', type=int, help='keep the first N commits that validate (sealed groups)')
+    parser.add_argument('--manifest', default='features.json')
+    args = parser.parse_args()
+    root = args.dir.resolve()
     root.mkdir(parents=True, exist_ok=True)
-    sys.exit(0 if validate(build(Path(sys.argv[1]).resolve(), root)) else 1)
+    manifest = build(args.repo.resolve(), root, args.commits, args.keep)
+    (root / args.manifest).write_text(json.dumps(manifest, indent=1) + '\n')
+    sys.exit(0 if validate(manifest) else 1)
 
 
 if __name__ == '__main__':
