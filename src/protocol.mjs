@@ -1745,7 +1745,7 @@ export function parseReply(raw, request, options = {}) {
   return reply;
 }
 
-function parseReplyBlocks(raw, request, {matchedTurn = false, finalAttempt = false} = {}) {
+function parseReplyBlocks(raw, request, {matchedTurn = false, finalAttempt = false, nested = false} = {}) {
   // The frame template reads EDIT READ_ID START END_LINE. A reply that keeps
   // the READ_ID label before the real id and range means the same frame.
   const original = raw.trim().replace(/^([ \t]*EDIT)[ \t]+READ_ID[ \t]*[:=]?[ \t]+(?=\S+[ \t]+\d+[ \t]+\d+[ \t]*$)/gm, '$1 ');
@@ -1848,6 +1848,14 @@ function parseReplyBlocks(raw, request, {matchedTurn = false, finalAttempt = fal
   // The whole envelope sometimes arrives wrapped in a one-element array.
   if (matchedTurn && Array.isArray(obj) && obj.length === 1 && obj[0] && typeof obj[0] === 'object' &&
       !Array.isArray(obj[0]) && Array.isArray(obj[0].content)) obj = obj[0];
+  // A whole EDIT or FILE: frame sometimes arrives as the text of a one-block
+  // JSON answer. Outside JSON that text is an edit and never a final answer,
+  // so parse it as the reply itself.
+  const only = Array.isArray(obj?.content) && obj.content.length === 1 ? obj.content[0] : undefined;
+  if (matchedTurn && !nested && request.choice.type === 'auto' && !request.editFiles && only?.type === 'text' &&
+      typeof only.text === 'string' && /^[ \t]*(?:EDIT[ \t]+\S+[ \t]+\d+[ \t]+\d+|FILE:[ \t]*\S)/m.test(only.text)) {
+    return parseReplyBlocks(only.text, request, {matchedTurn, finalAttempt, nested: true});
+  }
   // Some WhatsApp replies send the tool_use blocks without the content
   // envelope. Treat them exactly like the envelope: same tools, same checks.
   if (matchedTurn && request.choice.type === 'auto' && !request.editFiles &&
